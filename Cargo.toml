@@ -1,0 +1,41 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/diavasi",
+    "crates/diavasi-cli",
+    "crates/diavasi-adapter-postgres",
+    "crates/diavasi-adapter-mongodb",
+    "crates/diavasi-adapter-redis",
+    "crates/diavasi-adapter-scylla",
+]
+default-members = ["crates/diavasi", "crates/diavasi-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/diavasis/diavasi"
+rust-version = "1.85"
+
+[workspace.dependencies]
+diavasi = { path = "crates/diavasi", default-features = false }
+anyhow = "1"
+bytes = "1"
+clap = { version = "4", features = ["derive"] }
+futures = "0.3"
+prost = "0.13"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+tonic = "0.12"
+tonic-build = "0.12"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+quinn = "0.11"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rcgen = "0.13"
+hdrhistogram = "7"
+sysinfo = "0.33"
+wtransport = "0.7"

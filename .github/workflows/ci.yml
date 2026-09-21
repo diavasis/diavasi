@@ -1,0 +1,58 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
+        run: cargo fmt --check
+      - name: clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: test
+        run: cargo test --all --all-features
+      - name: transport smoke tcp
+        run: >
+          cargo run -p diavasi --bin diavasi-transport-bench --features transport-bench --
+          --transport tcp --smoke --output docs/bench/results.jsonl
+      - name: transport smoke grpc
+        run: >
+          cargo run -p diavasi --bin diavasi-transport-bench --features transport-bench --
+          --transport grpc --smoke --listen 127.0.0.1:9801 --connect 127.0.0.1:9801
+          --output docs/bench/results.jsonl
+      - name: transport smoke quic
+        run: >
+          cargo run -p diavasi --bin diavasi-transport-bench --features transport-bench --
+          --transport quic --smoke --listen 127.0.0.1:9802 --connect 127.0.0.1:9802
+          --output docs/bench/results.jsonl
+      - name: transport smoke webtransport
+        run: >
+          cargo run -p diavasi --bin diavasi-transport-bench --features transport-bench --
+          --transport webtransport --smoke --listen 127.0.0.1:9803 --connect 127.0.0.1:9803
+          --output docs/bench/results.jsonl
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: EmbarkStudios/cargo-deny-action@v2

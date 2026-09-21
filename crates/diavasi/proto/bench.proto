@@ -1,0 +1,58 @@
+syntax = "proto3";
+
+package diavasi.bench.v1;
+
+option java_multiple_files = true;
+option java_package = "com.diavasis.diavasi.bench.v1";
+
+service BenchStream {
+  rpc Consume(stream Envelope) returns (stream Envelope);
+}
+
+message Envelope {
+  uint32 version = 1;
+  oneof body {
+    JoinGroup join_group = 2;
+    Joined joined = 3;
+    RecordBatch record_batch = 4;
+    Ack ack = 5;
+    FlowControl flow_control = 6;
+    Heartbeat heartbeat = 7;
+    ErrorMessage error = 8;
+  }
+}
+
+message JoinGroup {
+  string group_id = 1;
+  string consumer_id = 2;
+}
+
+message Joined {
+  string group_id = 1;
+  string consumer_id = 2;
+}
+
+message Record {
+  uint64 record_id = 1;
+  bytes payload = 2;
+}
+
+message RecordBatch {
+  uint64 batch_id = 1;
+  repeated Record records = 2;
+  int64 sent_at_unix_ns = 3;
+}
+
+message Ack {
+  uint64 batch_id = 1;
+}
+
+message FlowControl {
+  uint32 max_in_flight = 1;
+}
+
+message Heartbeat {}
+
+message ErrorMessage {
+  string message = 1;
+}

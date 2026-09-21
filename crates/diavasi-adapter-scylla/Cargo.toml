@@ -1,0 +1,11 @@
+[package]
+name = "diavasi-adapter-scylla"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "ScyllaDB source adapter for Diavasi (Stage 10)"
+
+[dependencies]
+diavasi = { workspace = true, default-features = false }

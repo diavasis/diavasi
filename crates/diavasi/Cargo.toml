@@ -1,0 +1,46 @@
+[package]
+name = "diavasi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Durable consumer groups over existing database queries"
+
+[features]
+default = ["transport-bench"]
+transport-bench = ["dep:quinn", "dep:rcgen", "dep:hdrhistogram", "dep:sysinfo", "dep:wtransport"]
+
+[dependencies]
+anyhow.workspace = true
+bytes.workspace = true
+clap.workspace = true
+futures.workspace = true
+prost.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+rustls.workspace = true
+tonic.workspace = true
+tokio-stream = "0.1"
+quinn = { workspace = true, optional = true }
+rcgen = { workspace = true, optional = true }
+hdrhistogram = { workspace = true, optional = true }
+sysinfo = { workspace = true, optional = true }
+wtransport = { workspace = true, optional = true, features = ["self-signed", "dangerous-configuration"] }
+
+[build-dependencies]
+tonic-build.workspace = true
+protoc-bin-vendored = "3"
+
+[[bin]]
+name = "diavasi-transport-bench"
+path = "src/bin/transport_bench.rs"
+required-features = ["transport-bench"]
+
+[dev-dependencies]
+tempfile = "3"

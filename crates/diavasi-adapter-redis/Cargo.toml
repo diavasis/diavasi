@@ -1,0 +1,11 @@
+[package]
+name = "diavasi-adapter-redis"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Redis source adapter for Diavasi (Stage 9)"
+
+[dependencies]
+diavasi = { workspace = true, default-features = false }
