@@ -35,7 +35,7 @@ One Diavasi server hosts many independent consumer-group runtimes under a superv
 | Area | Status |
 | --- | --- |
 | Data-plane transport | Stage 0 complete; provisional recommendation gRPC+TLS (not frozen) |
-| Core domain | Not implemented |
+| Core domain | Stage 1 complete (in-memory `GroupEngine`; see docs/tutorials/stage-01-core-domain.md) |
 | Durable metadata store | Not implemented |
 | Control plane / CLI | CLI placeholder only |
 | Database adapters | Placeholders only |

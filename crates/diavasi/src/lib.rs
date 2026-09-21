@@ -1,9 +1,9 @@
 //! Diavasi server library.
 //!
-//! Stage 0 exposes the transport-neutral benchmark protocol and bake-off harness.
-//! Later stages add core domain, durable store, runtime, control plane, and data plane
-//! as modules in this crate.
+//! Stage 0: transport-neutral benchmark protocol and bake-off harness.
+//! Stage 1: in-memory consumer-group domain (`core`).
 
+pub mod core;
 pub mod protocol;
 
 #[cfg(feature = "transport-bench")]
