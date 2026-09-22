@@ -43,3 +43,45 @@ impl ConsumerRegistry {
         self.members.clear();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn join_leave_contains_and_len() {
+        let mut reg = ConsumerRegistry::new();
+        assert!(reg.is_empty());
+        assert_eq!(reg.len(), 0);
+
+        let c1 = ConsumerId::new("c1").unwrap();
+        let c2 = ConsumerId::new("c2").unwrap();
+        reg.join(c1.clone()).unwrap();
+        reg.join(c2.clone()).unwrap();
+        assert!(!reg.is_empty());
+        assert_eq!(reg.len(), 2);
+        assert!(reg.contains(&c1));
+        assert!(reg.contains(&c2));
+
+        reg.leave(&c1).unwrap();
+        assert!(!reg.contains(&c1));
+        assert_eq!(reg.len(), 1);
+
+        reg.clear();
+        assert!(reg.is_empty());
+        assert!(!reg.contains(&c2));
+    }
+
+    #[test]
+    fn duplicate_join_and_unknown_leave() {
+        let mut reg = ConsumerRegistry::new();
+        let c = ConsumerId::new("c1").unwrap();
+        reg.join(c.clone()).unwrap();
+        let err = reg.join(c.clone()).unwrap_err();
+        assert!(matches!(err, CoreError::DuplicateConsumer(_)));
+
+        let missing = ConsumerId::new("nope").unwrap();
+        let err = reg.leave(&missing).unwrap_err();
+        assert!(matches!(err, CoreError::UnknownConsumer(_)));
+    }
+}

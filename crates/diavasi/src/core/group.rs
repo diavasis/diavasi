@@ -13,7 +13,7 @@ use super::ordering::LogicalCursor;
 use super::record::{Batch, Record};
 use super::source::SyntheticSource;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupConfig {
     pub group_id: GroupId,
     pub total_records: u64,

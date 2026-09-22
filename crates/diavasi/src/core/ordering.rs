@@ -87,4 +87,69 @@ mod tests {
         assert!(!is_after(&Some(b.clone()), &a));
         assert!(is_after(&Some(a), &b));
     }
+
+    #[test]
+    fn atom_same_variant_ordering() {
+        assert!(OrderingAtom::I64(-1) < OrderingAtom::I64(0));
+        assert!(OrderingAtom::U64(1) < OrderingAtom::U64(2));
+        assert!(OrderingAtom::Bytes(b"a".to_vec()) < OrderingAtom::Bytes(b"b".to_vec()));
+        assert_eq!(
+            OrderingAtom::U64(5).partial_cmp(&OrderingAtom::U64(5)),
+            Some(Ordering::Equal)
+        );
+    }
+
+    #[test]
+    fn atom_cross_variant_rank() {
+        // I64 < U64 < Bytes
+        assert!(OrderingAtom::I64(i64::MAX) < OrderingAtom::U64(0));
+        assert!(OrderingAtom::U64(u64::MAX) < OrderingAtom::Bytes(vec![]));
+        assert!(OrderingAtom::Bytes(vec![0]) > OrderingAtom::I64(0));
+        assert!(OrderingAtom::Bytes(vec![0]) > OrderingAtom::U64(0));
+    }
+
+    #[test]
+    fn ordering_value_new_rejects_empty() {
+        let err = OrderingValue::new(vec![]).unwrap_err();
+        assert!(matches!(err, CoreError::InvalidArgument(_)));
+    }
+
+    #[test]
+    fn ordering_value_new_and_atoms() {
+        let v = OrderingValue::new(vec![
+            OrderingAtom::I64(1),
+            OrderingAtom::U64(2),
+            OrderingAtom::Bytes(b"x".to_vec()),
+        ])
+        .unwrap();
+        assert_eq!(v.atoms().len(), 3);
+        assert!(v < OrderingValue::new(vec![OrderingAtom::I64(2)]).unwrap());
+    }
+
+    #[test]
+    fn succ_u64_happy_and_edge() {
+        assert_eq!(
+            OrderingValue::single_u64(41).succ_u64().unwrap(),
+            OrderingValue::single_u64(42)
+        );
+        assert!(OrderingValue::single_u64(u64::MAX).succ_u64().is_none());
+        assert!(
+            OrderingValue::new(vec![OrderingAtom::I64(1)])
+                .unwrap()
+                .succ_u64()
+                .is_none()
+        );
+        assert!(
+            OrderingValue::new(vec![OrderingAtom::U64(1), OrderingAtom::U64(2)])
+                .unwrap()
+                .succ_u64()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn is_after_equal_is_false() {
+        let k = OrderingValue::single_u64(3);
+        assert!(!is_after(&Some(k.clone()), &k));
+    }
 }
