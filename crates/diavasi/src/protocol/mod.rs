@@ -3,6 +3,8 @@
 //! This is deliberately small. Production protocol v1 is frozen in Stage 5.
 
 pub mod pb {
+    // tonic::Status is large; generated gRPC stubs trip clippy::result_large_err on 1.98+.
+    #![allow(clippy::result_large_err)]
     tonic::include_proto!("diavasi.bench.v1");
 }
 
