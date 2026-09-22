@@ -44,3 +44,4 @@ required-features = ["transport-bench"]
 
 [dev-dependencies]
 tempfile = "3"
+proptest = { workspace = true }
