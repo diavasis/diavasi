@@ -1,6 +1,6 @@
 use tokio::sync::oneshot;
 
-use crate::core::{Batch, BatchId, ConsumerId, LogicalCursor};
+use crate::core::{Batch, BatchId, ConsumerId, GroupLifecycle, LogicalCursor};
 
 use super::error::RuntimeResult;
 
@@ -27,6 +27,15 @@ pub enum RuntimeCommand {
     },
     BufferStats {
         reply: oneshot::Sender<RuntimeResult<BufferStats>>,
+    },
+    Lifecycle {
+        reply: oneshot::Sender<RuntimeResult<GroupLifecycle>>,
+    },
+    ListConsumers {
+        reply: oneshot::Sender<RuntimeResult<Vec<ConsumerId>>>,
+    },
+    Drain {
+        reply: oneshot::Sender<RuntimeResult<()>>,
     },
     /// Wake the owner to pull from the synthetic source into the buffer.
     Fetch,

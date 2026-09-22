@@ -42,6 +42,12 @@ impl ConsumerRegistry {
     pub fn clear(&mut self) {
         self.members.clear();
     }
+
+    pub fn ids(&self) -> Vec<ConsumerId> {
+        let mut ids: Vec<_> = self.members.iter().cloned().collect();
+        ids.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        ids
+    }
 }
 
 #[cfg(test)]

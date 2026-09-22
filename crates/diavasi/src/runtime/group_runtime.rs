@@ -103,6 +103,15 @@ where
                             max_buffer_bytes: eng.config().max_buffer_bytes,
                         }));
                     }
+                    RuntimeCommand::Lifecycle { reply } => {
+                        let _ = reply.send(Ok(durable.engine().lifecycle()));
+                    }
+                    RuntimeCommand::ListConsumers { reply } => {
+                        let _ = reply.send(Ok(durable.list_consumers()));
+                    }
+                    RuntimeCommand::Drain { reply } => {
+                        let _ = reply.send(durable.drain().map_err(Into::into));
+                    }
                     RuntimeCommand::Fetch => {
                         let _ = durable.poll_fetch();
                     }
