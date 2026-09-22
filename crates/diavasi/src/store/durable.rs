@@ -102,6 +102,14 @@ impl<S: StateStore> DurableGroup<S> {
         self.engine.leave_consumer(id)
     }
 
+    pub fn drain(&mut self) -> CoreResult<()> {
+        self.engine.drain()
+    }
+
+    pub fn list_consumers(&self) -> Vec<ConsumerId> {
+        self.engine.list_consumers()
+    }
+
     pub fn poll_fetch(&mut self) -> CoreResult<usize> {
         self.engine.poll_fetch()
     }

@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot};
 
-use crate::core::{Batch, BatchId, ConsumerId, GroupId, LogicalCursor};
+use crate::core::{Batch, BatchId, ConsumerId, GroupId, GroupLifecycle, LogicalCursor};
 
 use super::command::{BufferStats, RuntimeCommand};
 use super::error::{RuntimeError, RuntimeResult};
@@ -66,6 +66,19 @@ impl GroupHandle {
     pub async fn buffer_stats(&self) -> RuntimeResult<BufferStats> {
         self.call(|reply| RuntimeCommand::BufferStats { reply })
             .await
+    }
+
+    pub async fn lifecycle(&self) -> RuntimeResult<GroupLifecycle> {
+        self.call(|reply| RuntimeCommand::Lifecycle { reply }).await
+    }
+
+    pub async fn list_consumers(&self) -> RuntimeResult<Vec<ConsumerId>> {
+        self.call(|reply| RuntimeCommand::ListConsumers { reply })
+            .await
+    }
+
+    pub async fn drain(&self) -> RuntimeResult<()> {
+        self.call(|reply| RuntimeCommand::Drain { reply }).await
     }
 
     pub async fn stop(&self) -> RuntimeResult<()> {

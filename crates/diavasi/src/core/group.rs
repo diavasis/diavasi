@@ -108,6 +108,10 @@ impl GroupEngine {
         Ok(())
     }
 
+    pub fn list_consumers(&self) -> Vec<ConsumerId> {
+        self.consumers.ids()
+    }
+
     pub fn stop(&mut self) -> CoreResult<()> {
         match self.lifecycle {
             GroupLifecycle::Draining => {

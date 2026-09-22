@@ -37,6 +37,10 @@ chacha20poly1305.workspace = true
 hex.workspace = true
 rand.workspace = true
 zeroize.workspace = true
+axum.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+http-body-util.workspace = true
 
 [build-dependencies]
 tonic-build.workspace = true
@@ -50,3 +54,6 @@ required-features = ["transport-bench"]
 [dev-dependencies]
 tempfile = "3"
 proptest = { workspace = true }
+tower = { workspace = true, features = ["util"] }
+http-body-util.workspace = true
+reqwest = { workspace = true }

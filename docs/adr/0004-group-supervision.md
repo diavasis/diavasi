@@ -21,4 +21,4 @@ Diavasi must run many consumer groups in one process. A failure in one group mus
 - In-process consumers use `GroupHandle` (join / leave / assign / ack) until Stage 5 exposes a network data plane.
 - Panic or abort of one group is recoverable; other groups keep running.
 - Channel capacity and engine buffer caps provide backpressure.
-- Control plane (Stage 4) will drive the supervisor; it is not required for Stage 3 acceptance.
+- Control plane (Stage 4) drives the supervisor over HTTP; Stage 3 acceptance did not require it.
