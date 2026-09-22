@@ -98,6 +98,10 @@ impl<S: StateStore> DurableGroup<S> {
         self.engine.join_consumer(id)
     }
 
+    pub fn leave_consumer(&mut self, id: &ConsumerId) -> CoreResult<()> {
+        self.engine.leave_consumer(id)
+    }
+
     pub fn poll_fetch(&mut self) -> CoreResult<usize> {
         self.engine.poll_fetch()
     }
