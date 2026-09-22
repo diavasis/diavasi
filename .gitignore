@@ -18,3 +18,7 @@ deps/
 /baoulo/
 .tool-versions
 erl_crash.dump
+lcov.info
+/coverage/
+/*.profraw
+default_*.profraw

@@ -40,3 +40,8 @@ hdrhistogram = "7"
 sysinfo = "0.33"
 proptest = "1"
 wtransport = "0.7"
+redb = "2.6"
+chacha20poly1305 = "0.10"
+hex = "0.4"
+rand = "0.8"
+zeroize = { version = "1", features = ["derive"] }
