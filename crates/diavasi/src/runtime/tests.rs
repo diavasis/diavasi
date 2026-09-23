@@ -1,8 +1,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::core::{ConsumerId, GroupConfig, GroupId, OrderingValue};
-use crate::runtime::{GroupHandle, GroupRuntimeConfig, GroupSupervisor, RuntimeError};
+use crate::core::{ConsumerId, GroupConfig, GroupId, OrderingValue, RecordSource, SourceError};
+use crate::runtime::{
+    GroupHandle, GroupRuntimeConfig, GroupSupervisor, RuntimeError, spawn_group_runtime,
+};
 use crate::store::{DurableGroup, RedbStore, StateStore};
 
 fn cfg(id: &str, total: u64, buf: usize, batch: usize) -> GroupConfig {
@@ -350,4 +352,34 @@ async fn stop_group_no_respawn() {
     assert!(sup.get_handle(&gid).is_none());
     let recovered = sup.supervise_once().await.unwrap();
     assert!(recovered.is_empty());
+}
+
+struct FailSource;
+
+impl RecordSource for FailSource {
+    fn fetch_after<'a>(
+        &'a mut self,
+        _cursor: &'a crate::core::LogicalCursor,
+        _limit: usize,
+    ) -> futures::future::BoxFuture<'a, Result<Vec<crate::core::Record>, SourceError>> {
+        Box::pin(async { Err(SourceError("database unavailable".into())) })
+    }
+}
+
+#[tokio::test]
+async fn source_fetch_error_stops_the_group_task() {
+    let (_dir, store) = temp_store();
+    persist_group(&store, "g1", 4, 4, 2);
+    let gid = GroupId::new("g1").unwrap();
+    let durable = DurableGroup::open(Arc::clone(&store), &gid).unwrap();
+    let spawned = spawn_group_runtime(
+        durable,
+        GroupRuntimeConfig {
+            fetch_interval: Duration::from_millis(5),
+            ..Default::default()
+        },
+        Some(Box::new(FailSource)),
+    );
+    let err = spawned.join.await.unwrap().unwrap_err();
+    assert!(err.to_string().contains("database unavailable"), "{err}");
 }

@@ -30,8 +30,12 @@ pub struct GroupCreateRequest {
     /// Timeout in milliseconds.
     pub batch_timeout_ms: u64,
     pub ordering_contract: String,
-    /// Optional connection id association (metadata only in Stage 4).
+    /// Optional connection this group reads.
+    #[serde(default)]
     pub connection_id: Option<String>,
+    /// Adapter source contract. Required for a postgres connection.
+    #[serde(default)]
+    pub source_spec: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,6 +48,7 @@ pub struct GroupView {
     pub batch_max_records: usize,
     pub batch_timeout_ms: u64,
     pub ordering_contract: String,
+    pub connection_id: Option<String>,
     pub lifecycle: GroupLifecycle,
     pub next_batch_id: u64,
     pub running: bool,

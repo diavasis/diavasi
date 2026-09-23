@@ -21,6 +21,7 @@ pub struct ServeConfig {
     pub store_key: Option<StoreKey>,
     pub tls_cert: Option<PathBuf>,
     pub tls_key: Option<PathBuf>,
+    pub source_factory: Option<Arc<dyn crate::runtime::SourceFactory>>,
 }
 
 pub const API_TOKEN_ENV: &str = "DIAVASI_API_TOKEN";
@@ -55,6 +56,9 @@ pub async fn serve(config: ServeConfig) -> Result<(), Box<dyn std::error::Error 
         key,
         config.bind.to_string(),
     ));
+    if let Some(factory) = config.source_factory.clone() {
+        service.install_source_factory(factory).await;
+    }
 
     let supervise_svc = Arc::clone(&service);
     tokio::spawn(async move {

@@ -15,25 +15,25 @@ connection + query + ordering contract + consumer group
 
 Progress is a logical checkpoint, not a live database cursor. Delivery is at-least-once: on ambiguity, Diavasi replays rather than skips. Control plane (HTTP + CLI) and data plane stay separate.
 
-Early development: Stages 0–5 are in place (transport bake-off, core domain, durable store, group supervision, control plane, TLS gRPC data plane). Real database adapters are still ahead.
+Early development: Stages 0–6 are in place (transport bake-off, core domain, durable store, group supervision, control plane, TLS gRPC data plane, PostgreSQL keyset adapter). MongoDB, Redis, and ScyllaDB adapters are still ahead.
 
 ## Roadmap
 
-| Stage | Focus | Status |
+| Release/Stage | Focus | Status |
 | --- | --- | --- |
-| 0 | Workspace/CI + data-plane transport bake-off | Done |
-| 1 | In-memory consumer-group domain | Done |
-| 2 | Durable metadata store (redb) | Done |
-| 3 | Supervised per-group Tokio runtime | Done |
-| 4 | HTTP control plane + CLI | Done |
-| 5 | Protocol v1 data plane (TLS gRPC, auth, backpressure) | Done |
-| Demo | Livebook: server, synthetic group, Python and Elixir clients ([notebook](clients/elixir/notebooks/demo.livemd)) | Next |
-| 6 | PostgreSQL adapter. After it lands, Docker Compose replaces the synthetic source | Planned |
-| 7 | End-to-end Postgres benchmarks / resource model | Planned |
-| 8–10 | MongoDB, Redis, ScyllaDB adapters | Planned |
-| 11 | Thin SDKs (Elixir, Rust, Python, Go) | Planned |
-| 12 | Metrics, soak, operator diagnostics. First a ratatui client of the HTTP API, then a Tauri 2 app on the same API | Planned |
-| 13 | Reconciliation research (ADR only) | Planned |
+| v0.0.0 | Workspace/CI + data-plane transport bake-off | Done |
+| v0.1.0 | In-memory consumer-group domain | Done |
+| v0.2.0 | Durable metadata store (redb) | Done |
+| v0.3.0 | Supervised per-group Tokio runtime | Done |
+| v0.4.0 | HTTP control plane + CLI | Done |
+| v0.5.0 | Protocol v1 data plane (TLS gRPC, auth, backpressure) | Done |
+| v0.5.0/Demo | Livebook: server, synthetic group, Python and Elixir clients ([notebook](clients/elixir/notebooks/demo.livemd)) | Next |
+| v0.6.0 | PostgreSQL adapter. After it lands, Docker Compose replaces the synthetic source | Done |
+| v0.7.0  | End-to-end Postgres benchmarks / resource model | Planned |
+| v0.8.0–v0.10.0 | MongoDB, Redis, ScyllaDB adapters | Planned |
+| v0.11.0  | Thin SDKs (Elixir, Rust, Python, Go) | Planned |
+| v0.12.0  | Metrics, soak, operator diagnostics. First a ratatui client of the HTTP API, then a Tauri 2 app on the same API | Planned |
+| v0.13.0  | Reconciliation research (ADR only) | Planned |
 
 Stage tutorials and reviews live under [`docs/`](docs/). Architecture: [`docs/architecture.md`](docs/architecture.md).
 
@@ -73,7 +73,7 @@ export PATH="$PWD/target/debug:$PATH"
 
 diavasi connection add \
   --id demo-pg \
-  --kind postgres \
+  --kind synthetic \
   --config-json '{"host":"localhost"}' \
   --secret 'never-echoed-again'
 
@@ -99,11 +99,28 @@ Use `--output json` for machine-readable responses.
 
 ## Development
 
+Start the database backends:
+
+```bash
+docker compose up -d
+```
+
+Postgres is published on host port 5433 so it does not collide with a local server on 5432. The adapter tests use `postgres://diavasi:diavasi@127.0.0.1:5433/diavasi`. MongoDB listens on `27017`, Redis on `6379`, and ScyllaDB on `9042`. Images are the smallest official variants: `postgres:16-alpine`, `redis:7-alpine`, `mongo:7` (no Alpine build), and `scylladb/scylla:2026.1`.
+
 ```bash
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all --all-features
+
 cargo deny check
+```
+### Coverage
+
+Set `DATABASE_URL` so the PostgreSQL adapter tests run. Without it they skip and the adapter is reported as uncovered.
+
+```bash
+export DATABASE_URL=postgres://diavasi:diavasi@127.0.0.1:5433/diavasi
+cargo llvm-cov --workspace --all-features --ignore-filename-regex 'transport_bench' --summary-only
 ```
 
 ## Workspace
@@ -112,7 +129,7 @@ cargo deny check
 | --- | --- |
 | `diavasi` | Server library (core, store, runtime, control plane) |
 | `diavasi-cli` | Admin CLI (`diavasi`) |
-| `diavasi-adapter-postgres` | PostgreSQL source (planned) |
+| `diavasi-adapter-postgres` | PostgreSQL keyset source |
 | `diavasi-adapter-mongodb` | MongoDB source (planned) |
 | `diavasi-adapter-redis` | Redis source (planned) |
 | `diavasi-adapter-scylla` | ScyllaDB source (planned) |

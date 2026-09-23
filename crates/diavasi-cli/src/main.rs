@@ -115,6 +115,9 @@ enum GroupCmd {
         ordering_contract: String,
         #[arg(long)]
         connection_id: Option<String>,
+        /// JSON source contract for a postgres connection.
+        #[arg(long)]
+        source_json: Option<String>,
     },
     List,
     Show {
@@ -192,6 +195,9 @@ async fn run(cli: Cli) -> Result<(), ExitCode> {
                 store_key,
                 tls_cert,
                 tls_key,
+                source_factory: Some(std::sync::Arc::new(
+                    diavasi_adapter_postgres::PostgresFactory,
+                )),
             })
             .await
             {
@@ -309,7 +315,17 @@ impl Client {
                 batch_timeout_ms,
                 ordering_contract,
                 connection_id,
+                source_json,
             }) => {
+                let source_spec = match source_json {
+                    Some(raw) => Some(serde_json::from_str::<serde_json::Value>(&raw).map_err(
+                        |e| {
+                            eprintln!("error: invalid --source-json: {e}");
+                            ExitCode::from(2)
+                        },
+                    )?),
+                    None => None,
+                };
                 let body = serde_json::json!({
                     "group_id": group_id,
                     "total_records": total_records,
@@ -320,6 +336,7 @@ impl Client {
                     "batch_timeout_ms": batch_timeout_ms,
                     "ordering_contract": ordering_contract,
                     "connection_id": connection_id,
+                    "source_spec": source_spec,
                 });
                 let v = self.post_json("/v1/groups", &body).await?;
                 self.print_value(&v, |v| {

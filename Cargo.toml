@@ -50,3 +50,7 @@ tower = "0.5"
 tower-http = { version = "0.6", features = ["limit", "trace"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 http-body-util = "0.1"
+tokio-postgres = { version = "0.7", features = ["with-serde_json-1"] }
+tokio-postgres-rustls = "0.13"
+webpki-roots = "0.26"
+diavasi-adapter-postgres = { path = "crates/diavasi-adapter-postgres" }

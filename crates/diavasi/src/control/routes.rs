@@ -94,7 +94,7 @@ async fn create_group(
     State(state): State<AppState>,
     Json(req): Json<GroupCreateRequest>,
 ) -> ControlResult<Json<super::dto::GroupView>> {
-    Ok(Json(state.service.create_group(req)?))
+    Ok(Json(state.service.create_group(req).await?))
 }
 
 async fn list_groups(

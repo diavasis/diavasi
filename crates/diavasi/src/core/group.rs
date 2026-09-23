@@ -9,7 +9,7 @@ use super::error::{CoreError, CoreResult};
 use super::ids::{BatchId, ConsumerId, GroupId};
 use super::inflight::{Assignment, InFlightTracker};
 use super::lifecycle::GroupLifecycle;
-use super::ordering::LogicalCursor;
+use super::ordering::{LogicalCursor, is_after};
 use super::record::{Batch, Record};
 use super::source::SyntheticSource;
 
@@ -87,6 +87,10 @@ impl GroupEngine {
 
     pub fn buffer_bytes(&self) -> usize {
         self.buffer.bytes()
+    }
+
+    pub fn buffer_free_records(&self) -> usize {
+        self.buffer.remaining_record_slots()
     }
 
     pub fn inflight_len(&self) -> usize {
@@ -184,6 +188,27 @@ impl GroupEngine {
             else {
                 break;
             };
+            if !self.buffer.can_accept(&record) {
+                break;
+            }
+            self.fetched_cursor = Some(record.ordering.clone());
+            self.buffer.push_back(record)?;
+            fetched += 1;
+        }
+        Ok(fetched)
+    }
+
+    /// Push records already read from an external source. Stops when the buffer is full.
+    /// The fetched cursor advances only for records that were accepted.
+    pub fn ingest(&mut self, records: Vec<Record>) -> CoreResult<usize> {
+        self.ensure_dispatch()?;
+        let mut fetched = 0usize;
+        for record in records {
+            if !is_after(&self.fetched_cursor, &record.ordering) {
+                return Err(CoreError::InvalidArgument(
+                    "source returned a record that is not after the fetched cursor",
+                ));
+            }
             if !self.buffer.can_accept(&record) {
                 break;
             }

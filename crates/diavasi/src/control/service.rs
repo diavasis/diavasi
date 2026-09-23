@@ -4,8 +4,10 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 
 use crate::core::{ConsumerId, GroupId};
-use crate::runtime::{GroupSupervisor, RuntimeError};
-use crate::store::{ConnectionRecord, DurableGroup, RedbStore, StateStore, StoreKey, seal_secret};
+use crate::runtime::{GroupSupervisor, RuntimeError, SourceFactory, SourceOpen};
+use crate::store::{
+    ConnectionRecord, DurableGroup, RedbStore, StateStore, StoreKey, open_secret, seal_secret,
+};
 
 use super::dto::{
     CheckpointView, ConnectionCreateRequest, ConnectionView, ConsumersView, GroupCreateRequest,
@@ -41,6 +43,13 @@ impl ControlService {
 
     pub fn store(&self) -> &Arc<RedbStore> {
         &self.store
+    }
+
+    pub async fn install_source_factory(&self, factory: Arc<dyn SourceFactory>) {
+        self.supervisor
+            .lock()
+            .await
+            .set_source_factory(factory, self.key.clone());
     }
 
     pub async fn supervise_once(&self) -> ControlResult<Vec<GroupId>> {
@@ -111,7 +120,7 @@ impl ControlService {
         Ok(())
     }
 
-    pub fn create_group(&self, req: GroupCreateRequest) -> ControlResult<GroupView> {
+    pub async fn create_group(&self, req: GroupCreateRequest) -> ControlResult<GroupView> {
         if req.ordering_contract.len() > 1024 {
             return Err(ControlError::BadRequest(
                 "ordering_contract too long".into(),
@@ -125,16 +134,47 @@ impl ControlService {
             )));
         }
         if let Some(cid) = &req.connection_id {
-            if self.store.get_connection(cid)?.is_none() {
-                return Err(ControlError::NotFound(format!(
-                    "connection not found: {cid}"
-                )));
+            let connection = self
+                .store
+                .get_connection(cid)?
+                .ok_or_else(|| ControlError::NotFound(format!("connection not found: {cid}")))?;
+            if connection.kind == "postgres" {
+                let source_spec = req.source_spec.clone().ok_or_else(|| {
+                    ControlError::BadRequest("postgres connection requires source_spec".into())
+                })?;
+                let factory = self
+                    .supervisor
+                    .lock()
+                    .await
+                    .source_factory()
+                    .ok_or_else(|| {
+                        ControlError::BadRequest("postgres source factory is not installed".into())
+                    })?;
+                let secret = open_secret(&self.key, &connection.sealed_secret)?;
+                factory
+                    .validate(SourceOpen {
+                        connection,
+                        source_spec,
+                        secret,
+                    })
+                    .await
+                    .map_err(ControlError::BadRequest)?;
+            } else if req.source_spec.is_some() {
+                return Err(ControlError::BadRequest(
+                    "source_spec requires a postgres connection".into(),
+                ));
             }
+        } else if req.source_spec.is_some() {
+            return Err(ControlError::BadRequest(
+                "source_spec requires connection_id".into(),
+            ));
         }
-        let g = DurableGroup::create(
+        let g = DurableGroup::create_with_source(
             Arc::clone(&self.store),
             config,
             req.ordering_contract.clone(),
+            req.connection_id.clone(),
+            req.source_spec.clone(),
         )?;
         drop(g);
         self.group_view_from_store(&req.group_id, false)
@@ -317,6 +357,7 @@ fn group_view(rec: &crate::store::GroupRecord, running: bool) -> GroupView {
         batch_max_records: rec.config.batch_max_records,
         batch_timeout_ms: rec.config.batch_timeout.as_millis() as u64,
         ordering_contract: rec.ordering_contract.clone(),
+        connection_id: rec.connection_id.clone(),
         lifecycle: rec.lifecycle,
         next_batch_id: rec.next_batch_id,
         running,

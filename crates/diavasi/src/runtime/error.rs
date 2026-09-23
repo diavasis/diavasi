@@ -28,6 +28,9 @@ pub enum RuntimeError {
     #[error("runtime task panicked or was aborted")]
     TaskFailed,
 
+    #[error("source: {0}")]
+    Source(String),
+
     #[error("shutdown")]
     Shutdown,
 }
