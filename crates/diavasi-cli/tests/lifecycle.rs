@@ -93,7 +93,7 @@ fn cli_lifecycle_against_serve() {
                 "--id",
                 "c1",
                 "--kind",
-                "postgres",
+                "synthetic",
                 "--config-json",
                 r#"{"host":"localhost"}"#,
                 "--secret",

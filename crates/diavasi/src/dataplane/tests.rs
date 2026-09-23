@@ -184,7 +184,9 @@ async fn start_plane_inner(
         batch_timeout_ms: 5_000,
         ordering_contract: "synthetic-u64".into(),
         connection_id: None,
+        source_spec: None,
     })
+    .await
     .unwrap();
     if start {
         svc.start_group("g1").await.unwrap();

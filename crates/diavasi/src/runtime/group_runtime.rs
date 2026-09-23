@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::task::{AbortHandle, JoinHandle};
 
+use crate::core::{RecordSource, SourceError};
 use crate::store::{DurableGroup, StateStore};
 
 use super::command::{BufferStats, RuntimeCommand};
@@ -40,6 +41,7 @@ pub struct SpawnedGroup {
 pub fn spawn_group_runtime<S>(
     mut durable: DurableGroup<S>,
     config: GroupRuntimeConfig,
+    mut source: Option<Box<dyn RecordSource>>,
 ) -> SpawnedGroup
 where
     S: StateStore + 'static,
@@ -113,7 +115,26 @@ where
                         let _ = reply.send(durable.drain().map_err(Into::into));
                     }
                     RuntimeCommand::Fetch => {
-                        let _ = durable.poll_fetch();
+                        if let Some(source) = source.as_mut() {
+                            let slots = durable.engine().buffer_free_records();
+                            if slots == 0 {
+                                continue;
+                            }
+                            let cursor = durable.engine().fetched_cursor().clone();
+                            match source.fetch_after(&cursor, slots).await {
+                                Ok(records) => {
+                                    if let Err(err) = durable.engine_mut().ingest(records) {
+                                        return Err(err.into());
+                                    }
+                                }
+                                Err(SourceError(message)) => {
+                                    tokio::time::sleep(Duration::from_millis(200)).await;
+                                    return Err(RuntimeError::Source(message));
+                                }
+                            }
+                        } else {
+                            let _ = durable.poll_fetch();
+                        }
                     }
                     RuntimeCommand::Tick => {
                         let _ = durable.tick(Instant::now());

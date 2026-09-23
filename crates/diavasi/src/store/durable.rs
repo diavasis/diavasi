@@ -16,6 +16,8 @@ pub struct DurableGroup<S: StateStore> {
     engine: GroupEngine,
     store: Arc<S>,
     ordering_contract: String,
+    connection_id: Option<String>,
+    source_spec: Option<serde_json::Value>,
     crash: CrashHook,
 }
 
@@ -26,6 +28,17 @@ impl<S: StateStore> DurableGroup<S> {
         config: GroupConfig,
         ordering_contract: impl Into<String>,
     ) -> StoreResult<Self> {
+        Self::create_with_source(store, config, ordering_contract, None, None)
+    }
+
+    /// Create a group that may be bound to a connection and adapter source spec.
+    pub fn create_with_source(
+        store: Arc<S>,
+        config: GroupConfig,
+        ordering_contract: impl Into<String>,
+        connection_id: Option<String>,
+        source_spec: Option<serde_json::Value>,
+    ) -> StoreResult<Self> {
         let ordering_contract = ordering_contract.into();
         let engine = GroupEngine::new(config)?;
         let group = GroupRecord {
@@ -33,6 +46,8 @@ impl<S: StateStore> DurableGroup<S> {
             lifecycle: engine.lifecycle(),
             next_batch_id: 1,
             ordering_contract: ordering_contract.clone(),
+            connection_id: connection_id.clone(),
+            source_spec: source_spec.clone(),
         };
         store.put_group(&group)?;
         store.commit_checkpoint(group.group_id(), &None)?;
@@ -40,6 +55,8 @@ impl<S: StateStore> DurableGroup<S> {
             engine,
             store,
             ordering_contract,
+            connection_id,
+            source_spec,
             crash: no_crash(),
         })
     }
@@ -61,6 +78,8 @@ impl<S: StateStore> DurableGroup<S> {
             engine,
             store,
             ordering_contract: group.ordering_contract,
+            connection_id: group.connection_id,
+            source_spec: group.source_spec,
             crash: no_crash(),
         })
     }
@@ -156,6 +175,8 @@ impl<S: StateStore> DurableGroup<S> {
             lifecycle: snap.lifecycle,
             next_batch_id: snap.next_batch_id,
             ordering_contract: self.ordering_contract.clone(),
+            connection_id: self.connection_id.clone(),
+            source_spec: self.source_spec.clone(),
         }
     }
 

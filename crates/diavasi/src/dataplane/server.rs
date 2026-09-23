@@ -341,6 +341,7 @@ fn batch_to_proto(batch: &Batch) -> RecordBatch {
             .map(|record| Record {
                 record_id: match record.ordering.atoms() {
                     [OrderingAtom::U64(id)] => *id,
+                    [OrderingAtom::I64(id)] if *id >= 0 => *id as u64,
                     _ => 0,
                 },
                 payload: record.payload.to_vec(),

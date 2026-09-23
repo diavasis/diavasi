@@ -1,4 +1,5 @@
 use bytes::Bytes;
+use futures::future::BoxFuture;
 
 use super::ordering::{LogicalCursor, OrderingValue, is_after};
 use super::record::Record;
@@ -62,6 +63,31 @@ impl SyntheticSource {
 
     pub fn resume(&self, cursor: &LogicalCursor) -> Vec<Record> {
         self.fetch_after(cursor, usize::MAX)
+    }
+}
+
+/// Failure while reading an external source.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct SourceError(pub String);
+
+/// Async ordered read used by adapters. Synthetic groups keep using [`SyntheticSource::fetch_after`] directly.
+pub trait RecordSource: Send {
+    fn fetch_after<'a>(
+        &'a mut self,
+        cursor: &'a LogicalCursor,
+        limit: usize,
+    ) -> BoxFuture<'a, Result<Vec<Record>, SourceError>>;
+}
+
+impl RecordSource for SyntheticSource {
+    fn fetch_after<'a>(
+        &'a mut self,
+        cursor: &'a LogicalCursor,
+        limit: usize,
+    ) -> BoxFuture<'a, Result<Vec<Record>, SourceError>> {
+        let records = SyntheticSource::fetch_after(self, cursor, limit);
+        Box::pin(async move { Ok(records) })
     }
 }
 

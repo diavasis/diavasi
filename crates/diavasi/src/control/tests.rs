@@ -141,6 +141,7 @@ async fn group_lifecycle_http() {
         batch_timeout_ms: 50,
         ordering_contract: "synthetic-u64".into(),
         connection_id: None,
+        source_spec: None,
     };
     let body = serde_json::to_string(&create).unwrap();
     let (status, _) = oneshot(
@@ -284,6 +285,7 @@ async fn serve_writes_certs_and_rejects_a_taken_data_port() {
         store_key: None,
         tls_cert: Some(dir.path().join("only-cert.pem")),
         tls_key: None,
+        source_factory: None,
     })
     .await
     .unwrap_err();
@@ -304,6 +306,7 @@ async fn serve_writes_certs_and_rejects_a_taken_data_port() {
         store_key: Some(StoreKey::generate()),
         tls_cert: None,
         tls_key: None,
+        source_factory: None,
     };
     let err = serve(config.clone()).await.unwrap_err();
     assert!(store.exists(), "{err}");

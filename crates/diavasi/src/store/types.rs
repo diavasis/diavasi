@@ -28,6 +28,12 @@ pub struct GroupRecord {
     pub next_batch_id: u64,
     /// Placeholder for future adapter ordering contracts.
     pub ordering_contract: String,
+    /// When set, the group reads this connection instead of the synthetic source.
+    #[serde(default)]
+    pub connection_id: Option<String>,
+    /// Adapter query contract. Absent for synthetic groups.
+    #[serde(default)]
+    pub source_spec: Option<serde_json::Value>,
 }
 
 impl GroupRecord {
@@ -44,6 +50,8 @@ impl GroupRecord {
             lifecycle: snapshot.lifecycle,
             next_batch_id: snapshot.next_batch_id,
             ordering_contract: ordering_contract.into(),
+            connection_id: None,
+            source_spec: None,
         }
     }
 }

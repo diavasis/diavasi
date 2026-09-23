@@ -125,6 +125,8 @@ fn group_and_checkpoint_round_trip() {
         lifecycle: crate::core::GroupLifecycle::Stopped,
         next_batch_id: 1,
         ordering_contract: "synthetic-u64".into(),
+        connection_id: None,
+        source_spec: None,
     };
     store.put_group(&group).unwrap();
     let cursor = Some(OrderingValue::single_u64(4));
@@ -445,6 +447,8 @@ fn list_connections_and_groups_sorted() {
                 lifecycle: crate::core::GroupLifecycle::Stopped,
                 next_batch_id: 1,
                 ordering_contract: "synthetic-u64".into(),
+                connection_id: None,
+                source_spec: None,
             })
             .unwrap();
     }
@@ -472,6 +476,8 @@ fn missing_gets_and_delete_group_clears_checkpoint() {
             lifecycle: crate::core::GroupLifecycle::Stopped,
             next_batch_id: 1,
             ordering_contract: "synthetic-u64".into(),
+            connection_id: None,
+            source_spec: None,
         })
         .unwrap();
     store
@@ -492,6 +498,8 @@ fn commit_progress_updates_group_and_cursor_atomically() {
         lifecycle: crate::core::GroupLifecycle::Running,
         next_batch_id: 1,
         ordering_contract: "synthetic-u64".into(),
+        connection_id: None,
+        source_spec: None,
     };
     store.put_group(&group).unwrap();
     group.next_batch_id = 9;
@@ -527,6 +535,8 @@ fn connection_and_group_overwrite() {
         lifecycle: crate::core::GroupLifecycle::Stopped,
         next_batch_id: 1,
         ordering_contract: "v1".into(),
+        connection_id: None,
+        source_spec: None,
     };
     store.put_group(&group).unwrap();
     group.ordering_contract = "v2".into();

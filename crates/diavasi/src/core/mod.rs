@@ -27,4 +27,4 @@ pub use inflight::{Assignment, InFlightTracker};
 pub use lifecycle::GroupLifecycle;
 pub use ordering::{LogicalCursor, OrderingAtom, OrderingValue};
 pub use record::{Batch, Record};
-pub use source::SyntheticSource;
+pub use source::{RecordSource, SourceError, SyntheticSource};
