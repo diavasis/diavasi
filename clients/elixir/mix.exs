@@ -13,13 +13,14 @@ defmodule DiavasiBench.MixProject do
 
   def application do
     [
-      extra_applications: [:logger]
+      extra_applications: [:logger, :ssl, :public_key]
     ]
   end
 
   defp deps do
     [
       {:protobuf, "~> 0.14"},
+      {:mint, "~> 1.5"},
       {:jason, "~> 1.4"}
     ]
   end

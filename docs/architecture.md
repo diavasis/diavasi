@@ -34,7 +34,7 @@ One Diavasi server hosts many independent consumer-group runtimes under a superv
 
 | Area | Status |
 | --- | --- |
-| Data-plane transport | Stage 0 complete; provisional recommendation gRPC+TLS (not frozen) |
+| Data-plane transport | Stage 5 frozen: gRPC over HTTP/2 with TLS ([ADR 0006](adr/0006-data-plane-transport.md)) |
 | Core domain | Stage 1 complete (in-memory `GroupEngine`; see docs/tutorials/stage-01-core-domain.md) |
 | Durable metadata store | Stage 2 complete (`StateStore` + redb; see docs/tutorials/stage-02-durable-store.md) |
 | Group runtime / supervision | Stage 3 complete (`GroupSupervisor`; see docs/tutorials/stage-03-group-runtime.md) |
@@ -44,6 +44,10 @@ One Diavasi server hosts many independent consumer-group runtimes under a superv
 ## Control plane (Stage 4)
 
 Operators talk to a versioned HTTP API (`/v1`) served by axum inside the Diavasi process. The `diavasi` CLI is an HTTP client (plus `diavasi serve` which hosts the control plane). Auth is a shared bearer token; connection secrets are sealed at rest and never returned after create. Lifecycle verbs map onto `GroupSupervisor` (`pause` = graceful stop). See [ADR 0005](adr/0005-control-plane.md).
+
+## Data plane (Stage 5)
+
+Consumers connect with TLS gRPC (`diavasi.data.v1`) to a running group. The session maps onto `GroupHandle`: join, bounded assign, ack, and leave. A dropped stream requeues unacked batches. Auth is the same bearer token as the control plane. See [ADR 0006](adr/0006-data-plane-transport.md) and [ADR 0007](adr/0007-protocol-v1.md).
 
 ## Non-goals (initial releases)
 

@@ -5,9 +5,11 @@
 //! Stage 2: durable metadata store (`store`).
 //! Stage 3: supervised per-group Tokio runtime (`runtime`).
 //! Stage 4: HTTP control plane (`control`).
+//! Stage 5: TLS gRPC data plane (`dataplane`).
 
 pub mod control;
 pub mod core;
+pub mod dataplane;
 pub mod protocol;
 pub mod runtime;
 pub mod store;

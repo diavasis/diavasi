@@ -2,7 +2,7 @@
 
 ## Status
 
-**Stage 0 complete pending transport approval.** All four candidates have Rust release smoke results. Python and Elixir TCP clients ran successfully. **No production transport is frozen until explicitly approved.**
+**Stage 0 bake-off is complete.** The production transport was frozen in Stage 5 as gRPC over HTTP/2 with TLS ([ADR 0006](adr/0006-data-plane-transport.md)). Python and Elixir TCP clients ran in the bake-off; Stage 5 adds gRPC compatibility clients.
 
 ## Methodology
 
@@ -77,9 +77,9 @@ Throughput among Rust transports is close in this smoke size. Absolute numbers a
 | Dependency weight | low | medium | medium | medium-high |
 | Spec maturity | stable | stable | stable | draft |
 
-## Recommendation (provisional; not frozen)
+## Recommendation (frozen in Stage 5)
 
-**Prefer gRPC (HTTP/2 + TLS) for the production data plane.**
+**gRPC over HTTP/2 with TLS is the production data plane.** See [ADR 0006](adr/0006-data-plane-transport.md).
 
 Raw TCP won the localhost smoke on throughput, but Diavasi must be proxy- and firewall-friendly and must use TLS for remote data planes. Those constraints outweigh the smoke rps gap.
 
@@ -98,9 +98,9 @@ Reasons:
 3. Client ecosystems (Rust, Python, Elixir, and the later SDK set) are strongest for gRPC after TCP.
 4. QUIC / WebTransport keep built-in TLS but are UDP-based and often less middlebox-friendly; WebTransport remains draft / `wtransport`-not-production-ready.
 
-TCP remains useful for local/dev cleartext and as a regression harness, not as the default remote data plane.
+TCP remains useful for local/dev cleartext and as a regression harness, not as the production data plane.
 
-**Explicit freeze requires human approval.** Proposed freeze: **gRPC over HTTP/2 with TLS**.
+**Frozen:** gRPC over HTTP/2 with TLS.
 
 ## Acceptance checklist
 
@@ -110,4 +110,4 @@ TCP remains useful for local/dev cleartext and as a regression harness, not as t
 - [x] WebTransport included with documented caveats
 - [x] CI workflow present (includes WebTransport smoke)
 - [x] Provisional recommendation written
-- [ ] Transport frozen (requires explicit approval; not done in Stage 0)
+- [x] Transport frozen: gRPC over HTTP/2 with TLS (Stage 5, [ADR 0006](adr/0006-data-plane-transport.md))

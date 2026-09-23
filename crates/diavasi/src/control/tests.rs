@@ -229,3 +229,91 @@ async fn group_lifecycle_http() {
     .await;
     assert_eq!(status, StatusCode::OK);
 }
+
+#[tokio::test]
+async fn missing_routes_use_error_responses() {
+    let (_dir, state) = test_state("tok");
+    let (status, body) = oneshot(
+        state.clone(),
+        auth_json("GET", "/v1/connections/missing", "tok", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    assert!(text.contains("not found"));
+
+    let (status, _) = oneshot(state.clone(), auth_json("GET", "/v1/status", "tok", None)).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = oneshot(state.clone(), auth_json("GET", "/metrics", "tok", None)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(String::from_utf8(body.to_vec()).unwrap().contains("ok"));
+    let (status, _) = oneshot(state.clone(), auth_json("GET", "/v1/groups", "tok", None)).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = oneshot(
+        state.clone(),
+        auth_json("GET", "/v1/groups/missing", "tok", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = oneshot(
+        state.clone(),
+        auth_json("DELETE", "/v1/connections/missing", "tok", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = oneshot(
+        state,
+        auth_json("GET", "/v1/groups/missing/consumers", "tok", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn serve_writes_certs_and_rejects_a_taken_data_port() {
+    use std::net::SocketAddr;
+
+    use crate::control::{ServeConfig, serve};
+
+    let dir = tempdir().unwrap();
+    let err = serve(ServeConfig {
+        bind: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
+        data_bind: "127.0.0.1:0".parse().unwrap(),
+        store_path: dir.path().join("meta.redb"),
+        api_token: "tok".into(),
+        store_key: None,
+        tls_cert: Some(dir.path().join("only-cert.pem")),
+        tls_key: None,
+    })
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("together"));
+
+    let hold = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let data_bind = hold.local_addr().unwrap();
+    let control = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let bind = control.local_addr().unwrap();
+    drop(control);
+
+    let store = dir.path().join("nested").join("meta.redb");
+    let config = ServeConfig {
+        bind,
+        data_bind,
+        store_path: store.clone(),
+        api_token: "tok".into(),
+        store_key: Some(StoreKey::generate()),
+        tls_cert: None,
+        tls_key: None,
+    };
+    let err = serve(config.clone()).await.unwrap_err();
+    assert!(store.exists(), "{err}");
+    assert!(store.parent().unwrap().join("dataplane-ca.crt").exists());
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    let mut with_tls = config.clone();
+    with_tls.tls_cert = Some(store.parent().unwrap().join("dataplane.crt"));
+    with_tls.tls_key = Some(store.parent().unwrap().join("dataplane.key"));
+    let err = serve(with_tls).await.unwrap_err();
+    let _ = err;
+    drop(hold);
+}
