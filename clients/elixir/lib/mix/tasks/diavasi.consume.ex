@@ -20,7 +20,9 @@ defmodule Mix.Tasks.Diavasi.Consume do
       )
 
     case Diavasi.Data.Client.run(opts) do
-      :ok -> :ok
+      {:ok, _ids} ->
+        :ok
+
       {:error, reason} ->
         Mix.shell().error(reason)
         exit({:shutdown, 1})

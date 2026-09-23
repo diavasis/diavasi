@@ -13,6 +13,7 @@ defmodule Diavasi.Data.Client do
     consumer = Keyword.get(opts, :consumer, "elixir")
     total = Keyword.fetch!(opts, :total)
     max_in_flight = Keyword.get(opts, :max_in_flight, 4)
+    halt_after = Keyword.get(opts, :halt_after)
 
     [host, port_s] = String.split(addr, ":")
     port = String.to_integer(port_s)
@@ -49,19 +50,29 @@ defmodule Diavasi.Data.Client do
       acked: 0,
       sent_flow: false,
       done: false,
+      halted: false,
+      halt_after: halt_after,
       error: nil
     }
 
     state = loop(state)
-    Mint.HTTP.close(state.conn)
+
+    unless state.halted do
+      Mint.HTTP.close(state.conn)
+    end
+
+    ids = state.seen |> MapSet.to_list() |> Enum.sort()
 
     cond do
       state.error != nil ->
         {:error, state.error}
 
+      state.halted ->
+        {:ok, ids}
+
       MapSet.size(state.seen) == total and state.acked > 0 ->
         IO.puts("elixir consumed #{MapSet.size(state.seen)} records in #{state.acked} batches")
-        :ok
+        {:ok, ids}
 
       true ->
         {:error, "incomplete consume seen=#{MapSet.size(state.seen)} acked=#{state.acked}"}
@@ -130,7 +141,10 @@ defmodule Diavasi.Data.Client do
 
     send_env(
       state,
-      %Envelope{version: 1, body: {:flow_control, %FlowControl{max_in_flight: state.max_in_flight}}}
+      %Envelope{
+        version: 1,
+        body: {:flow_control, %FlowControl{max_in_flight: state.max_in_flight}}
+      }
     )
   end
 
@@ -142,15 +156,13 @@ defmodule Diavasi.Data.Client do
         MapSet.put(acc, record.record_id)
       end)
 
-    state = %{state | seen: seen, acked: state.acked + 1}
-    state = send_env(state, %Envelope{version: 1, body: {:ack, %Ack{batch_id: batch.batch_id}}})
+    state = %{state | seen: seen}
 
-    if MapSet.size(seen) >= state.total do
-      state = send_env(state, %Envelope{version: 1, body: {:leave, %Leave{}}})
-      {:ok, conn} = Mint.HTTP.stream_request_body(state.conn, state.ref, :eof)
-      %{state | conn: conn, done: true}
+    if is_integer(state.halt_after) and state.acked >= state.halt_after do
+      Mint.HTTP.close(state.conn)
+      %{state | done: true, halted: true}
     else
-      state
+      ack_batch(state, batch)
     end
   end
 
@@ -162,6 +174,19 @@ defmodule Diavasi.Data.Client do
 
   defp handle_frame(other, state) do
     %{state | error: "unexpected frame #{inspect(other)}", done: true}
+  end
+
+  defp ack_batch(state, batch) do
+    state = %{state | acked: state.acked + 1}
+    state = send_env(state, %Envelope{version: 1, body: {:ack, %Ack{batch_id: batch.batch_id}}})
+
+    if MapSet.size(state.seen) >= state.total do
+      state = send_env(state, %Envelope{version: 1, body: {:leave, %Leave{}}})
+      {:ok, conn} = Mint.HTTP.stream_request_body(state.conn, state.ref, :eof)
+      %{state | conn: conn, done: true}
+    else
+      state
+    end
   end
 
   defp send_env(%{conn: conn, ref: ref} = state, envelope) do
