@@ -21,6 +21,7 @@ def main() -> int:
     parser.add_argument("--consumer", default="python")
     parser.add_argument("--total", type=int, required=True)
     parser.add_argument("--max-in-flight", type=int, default=4)
+    parser.add_argument("--print-ids", action="store_true")
     args = parser.parse_args()
 
     with open(args.ca, "rb") as handle:
@@ -92,6 +93,8 @@ def main() -> int:
     if len(seen) != args.total or acked == 0:
         sys.stderr.write(f"incomplete consume seen={len(seen)} acked={acked}\n")
         return 1
+    if args.print_ids:
+        print("ids " + " ".join(str(record_id) for record_id in sorted(seen)))
     print(f"python consumed {len(seen)} records in {acked} batches")
     return 0
 

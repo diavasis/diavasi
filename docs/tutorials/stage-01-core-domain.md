@@ -212,3 +212,5 @@ A bug would be: advancing `committed` while an earlier ordering remains unacked;
 ## 8. What Stage 2 adds
 
 Stage 2 persists group definition and `committed_cursor` through a narrow `StateStore` (SQLite). In-flight work still will not be durable; recovery continues to replay from committed. The `GroupEngine` snapshot shape is the seam that Stage 2 hardens.
+
+

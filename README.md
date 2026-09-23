@@ -27,11 +27,12 @@ Early development: Stages 0–5 are in place (transport bake-off, core domain, d
 | 3 | Supervised per-group Tokio runtime | Done |
 | 4 | HTTP control plane + CLI | Done |
 | 5 | Protocol v1 data plane (TLS gRPC, auth, backpressure) | Done |
-| 6 | PostgreSQL adapter | Planned |
+| Demo | Livebook: server, synthetic group, Python and Elixir clients ([notebook](clients/elixir/notebooks/demo.livemd)) | Next |
+| 6 | PostgreSQL adapter. After it lands, Docker Compose replaces the synthetic source | Planned |
 | 7 | End-to-end Postgres benchmarks / resource model | Planned |
 | 8–10 | MongoDB, Redis, ScyllaDB adapters | Planned |
 | 11 | Thin SDKs (Elixir, Rust, Python, Go) | Planned |
-| 12 | Metrics, soak, operator diagnostics | Planned |
+| 12 | Metrics, soak, operator diagnostics. First a ratatui client of the HTTP API, then a Tauri 2 app on the same API | Planned |
 | 13 | Reconciliation research (ADR only) | Planned |
 
 Stage tutorials and reviews live under [`docs/`](docs/). Architecture: [`docs/architecture.md`](docs/architecture.md).
