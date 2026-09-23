@@ -1,0 +1,75 @@
+syntax = "proto3";
+
+package diavasi.data.v1;
+
+// Production data plane. Distinct from the Stage 0 bench package.
+service DataPlane {
+  rpc Consume(stream Envelope) returns (stream Envelope);
+}
+
+message Envelope {
+  uint32 version = 1;
+  oneof body {
+    Hello hello = 2;
+    HelloAck hello_ack = 3;
+    JoinGroup join_group = 4;
+    Joined joined = 5;
+    RecordBatch record_batch = 6;
+    Ack ack = 7;
+    // Reserved. Clients must not send this; the server rejects it.
+    Nack nack = 8;
+    Heartbeat heartbeat = 9;
+    FlowControl flow_control = 10;
+    ErrorMessage error = 11;
+    Leave leave = 12;
+  }
+}
+
+message Hello {
+  uint32 protocol_version = 1;
+}
+
+message HelloAck {
+  uint32 protocol_version = 1;
+}
+
+message JoinGroup {
+  string group_id = 1;
+  string consumer_id = 2;
+}
+
+message Joined {
+  string group_id = 1;
+  string consumer_id = 2;
+}
+
+message Record {
+  uint64 record_id = 1;
+  bytes payload = 2;
+}
+
+message RecordBatch {
+  uint64 batch_id = 1;
+  repeated Record records = 2;
+}
+
+message Ack {
+  uint64 batch_id = 1;
+}
+
+message Nack {
+  uint64 batch_id = 1;
+}
+
+message Heartbeat {}
+
+message FlowControl {
+  uint32 max_in_flight = 1;
+}
+
+message ErrorMessage {
+  uint32 code = 1;
+  string message = 2;
+}
+
+message Leave {}

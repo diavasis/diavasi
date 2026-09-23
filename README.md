@@ -15,7 +15,7 @@ connection + query + ordering contract + consumer group
 
 Progress is a logical checkpoint, not a live database cursor. Delivery is at-least-once: on ambiguity, Diavasi replays rather than skips. Control plane (HTTP + CLI) and data plane stay separate.
 
-Early development: Stages 0–4 are in place (transport bake-off, core domain, durable store, group supervision, control plane/CLI). The networked data plane and real database adapters are still ahead.
+Early development: Stages 0–5 are in place (transport bake-off, core domain, durable store, group supervision, control plane, TLS gRPC data plane). Real database adapters are still ahead.
 
 ## Roadmap
 
@@ -26,7 +26,7 @@ Early development: Stages 0–4 are in place (transport bake-off, core domain, d
 | 2 | Durable metadata store (redb) | Done |
 | 3 | Supervised per-group Tokio runtime | Done |
 | 4 | HTTP control plane + CLI | Done |
-| 5 | Protocol v1 data plane (TLS, auth, backpressure) | Next |
+| 5 | Protocol v1 data plane (TLS gRPC, auth, backpressure) | Done |
 | 6 | PostgreSQL adapter | Planned |
 | 7 | End-to-end Postgres benchmarks / resource model | Planned |
 | 8–10 | MongoDB, Redis, ScyllaDB adapters | Planned |

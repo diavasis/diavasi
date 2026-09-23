@@ -49,6 +49,15 @@ enum Commands {
         /// Optional 64-char hex store master key (else DIAVASI_STORE_KEY / ephemeral).
         #[arg(long)]
         store_key: Option<String>,
+        /// TLS gRPC data plane bind address.
+        #[arg(long, default_value = "127.0.0.1:7710")]
+        data_bind: SocketAddr,
+        /// PEM certificate for the data plane. Generated next to the store when omitted.
+        #[arg(long)]
+        tls_cert: Option<PathBuf>,
+        /// PEM private key for the data plane.
+        #[arg(long)]
+        tls_key: Option<PathBuf>,
     },
     /// Print library version.
     Version,
@@ -158,6 +167,9 @@ async fn run(cli: Cli) -> Result<(), ExitCode> {
             store,
             token,
             store_key,
+            data_bind,
+            tls_cert,
+            tls_key,
         } => {
             tracing_subscriber::fmt()
                 .with_env_filter(
@@ -174,9 +186,12 @@ async fn run(cli: Cli) -> Result<(), ExitCode> {
             };
             if let Err(e) = serve(ServeConfig {
                 bind,
+                data_bind,
                 store_path: store,
                 api_token: token,
                 store_key,
+                tls_cert,
+                tls_key,
             })
             .await
             {

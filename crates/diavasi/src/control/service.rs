@@ -20,7 +20,7 @@ pub const MAX_CONFIG_JSON_BYTES: usize = 64 * 1024;
 pub struct ControlService {
     store: Arc<RedbStore>,
     key: StoreKey,
-    supervisor: Mutex<GroupSupervisor<RedbStore>>,
+    supervisor: Arc<Mutex<GroupSupervisor<RedbStore>>>,
     bind: String,
 }
 
@@ -30,9 +30,13 @@ impl ControlService {
         Self {
             store,
             key,
-            supervisor: Mutex::new(supervisor),
+            supervisor: Arc::new(Mutex::new(supervisor)),
             bind: bind.into(),
         }
+    }
+
+    pub fn supervisor(&self) -> Arc<Mutex<GroupSupervisor<RedbStore>>> {
+        Arc::clone(&self.supervisor)
     }
 
     pub fn store(&self) -> &Arc<RedbStore> {

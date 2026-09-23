@@ -9,7 +9,7 @@ description = "Durable consumer groups over existing database queries"
 
 [features]
 default = ["transport-bench"]
-transport-bench = ["dep:quinn", "dep:rcgen", "dep:hdrhistogram", "dep:sysinfo", "dep:wtransport"]
+transport-bench = ["dep:quinn", "dep:hdrhistogram", "dep:sysinfo", "dep:wtransport"]
 
 [dependencies]
 anyhow.workspace = true
@@ -25,10 +25,10 @@ tokio-util.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 rustls.workspace = true
-tonic.workspace = true
+tonic = { workspace = true, features = ["tls"] }
 tokio-stream = "0.1"
 quinn = { workspace = true, optional = true }
-rcgen = { workspace = true, optional = true }
+rcgen.workspace = true
 hdrhistogram = { workspace = true, optional = true }
 sysinfo = { workspace = true, optional = true }
 wtransport = { workspace = true, optional = true, features = ["self-signed", "dangerous-configuration"] }
