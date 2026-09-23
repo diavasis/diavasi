@@ -684,8 +684,10 @@ name = "diavasi-adapter-postgres"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "clap",
  "diavasi",
  "futures",
+ "reqwest",
  "rustls",
  "serde_json",
  "tempfile",
@@ -693,6 +695,7 @@ dependencies = [
  "tokio-postgres",
  "tokio-postgres-rustls",
  "tracing",
+ "tracing-subscriber",
  "webpki-roots 0.26.11",
 ]
 

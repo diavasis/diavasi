@@ -49,7 +49,6 @@ impl PgEndpoint {
         Ok(Self { config, tls })
     }
 
-    #[cfg(test)]
     pub fn from_database_url(url: &str) -> Result<(Self, String), String> {
         let config: Config = url.parse().map_err(|err| format!("DATABASE_URL: {err}"))?;
         let password = config
@@ -60,7 +59,6 @@ impl PgEndpoint {
         Ok((Self { config, tls: false }, password))
     }
 
-    #[cfg(test)]
     pub fn config_json(&self) -> serde_json::Value {
         let host = match self.config.get_hosts().first() {
             Some(tokio_postgres::config::Host::Tcp(host)) => host.clone(),

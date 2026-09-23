@@ -87,7 +87,17 @@ where
                         let _ = reply.send(durable.leave_consumer(&consumer).map_err(Into::into));
                     }
                     RuntimeCommand::Assign { consumer, reply } => {
-                        let _ = reply.send(durable.assign_batch(&consumer).map_err(Into::into));
+                        match durable.assign_batch(&consumer) {
+                            Ok(batch) => {
+                                let id = batch.id;
+                                if reply.send(Ok(batch)).is_err() {
+                                    durable.engine_mut().requeue_batch(id);
+                                }
+                            }
+                            Err(err) => {
+                                let _ = reply.send(Err(err.into()));
+                            }
+                        }
                     }
                     RuntimeCommand::Ack { batch_id, reply } => {
                         let _ = reply.send(durable.ack(batch_id).map_err(Into::into));

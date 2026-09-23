@@ -1,6 +1,8 @@
+use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::task::Poll;
 use std::time::{Duration, Instant};
 
 use futures::{Stream, StreamExt};
@@ -149,11 +151,17 @@ async fn drive_session(
     let mut last_rx = Instant::now();
     let mut heartbeat = tokio::time::interval(heartbeat_interval);
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // Held across iterations so a heartbeat or inbound frame cannot drop an
+    // assign that the group owner has already moved into inflight.
+    let mut inflight_pull: Option<Pin<Box<dyn Future<Output = Pull> + Send>>> = None;
 
     loop {
-        let assign_target = joined
-            .as_ref()
-            .map(|consumer| (consumer.handle.clone(), consumer.consumer.clone()));
+        if inflight_pull.is_none() && session.can_assign() {
+            if let Some(consumer) = joined.as_ref() {
+                let target = (consumer.handle.clone(), consumer.consumer.clone());
+                inflight_pull = Some(Box::pin(pull_owned(Some(target))));
+            }
+        }
         tokio::select! {
             _ = heartbeat.tick() => {
                 if last_rx.elapsed() > heartbeat_timeout {
@@ -249,7 +257,8 @@ async fn drive_session(
                     }
                 }
             }
-            pulled = pull_owned(assign_target.clone()), if session.can_assign() && assign_target.is_some() => {
+            pulled = poll_pull(&mut inflight_pull), if inflight_pull.is_some() => {
+                inflight_pull = None;
                 match pulled {
                     Pull::Batch(batch) => {
                         let id = batch.id.as_u64();
@@ -281,6 +290,15 @@ enum Pull {
     Batch(Batch),
     Idle,
     Failed(String),
+}
+
+fn poll_pull(
+    slot: &mut Option<Pin<Box<dyn Future<Output = Pull> + Send>>>,
+) -> impl Future<Output = Pull> + '_ {
+    std::future::poll_fn(move |cx| match slot.as_mut() {
+        Some(fut) => fut.as_mut().poll(cx),
+        None => Poll::Pending,
+    })
 }
 
 async fn pull_owned(target: Option<(GroupHandle, ConsumerId)>) -> Pull {

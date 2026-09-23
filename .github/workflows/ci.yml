@@ -57,6 +57,10 @@ jobs:
           cargo run -p diavasi --bin diavasi-transport-bench --features transport-bench --
           --transport quic --smoke --listen 127.0.0.1:9802 --connect 127.0.0.1:9802
           --output docs/bench/results.jsonl
+      - name: stage 7 smoke
+        run: >
+          cargo run -p diavasi-adapter-postgres --bin diavasi-e2e-bench --
+          --smoke --output /tmp/stage-07-smoke.jsonl
       - name: transport smoke webtransport
         run: >
           cargo run -p diavasi --bin diavasi-transport-bench --features transport-bench --

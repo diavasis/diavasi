@@ -1,7 +1,7 @@
 //! PostgreSQL keyset source.
 
 mod catalog;
-mod connect;
+pub mod connect;
 mod reader;
 mod spec;
 
