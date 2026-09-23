@@ -1,4 +1,6 @@
 use std::collections::HashSet;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use futures::StreamExt;
@@ -29,7 +31,18 @@ pub struct ConsumerOptions {
     pub leave_after_join: bool,
     /// Ack the first batch twice so the server rejects the duplicate.
     pub duplicate_first_ack: bool,
+    /// Sleep this long after a batch arrives and before the ack is sent.
+    pub ack_delay: Duration,
+    /// When set, every client sharing this counter leaves once `target` records are acked.
+    pub shared_progress: Option<SharedProgress>,
     pub timeout: Duration,
+}
+
+/// Ack counter shared by consumers of one group.
+#[derive(Clone)]
+pub struct SharedProgress {
+    pub acked: Arc<AtomicU64>,
+    pub target: u64,
 }
 
 #[derive(Debug)]
@@ -37,6 +50,8 @@ pub struct ConsumeReport {
     pub record_ids: Vec<u64>,
     pub batches: usize,
     pub acked: usize,
+    /// Time from batch receipt through the optional ack delay until the ack is queued.
+    pub ack_latency_us: Vec<u64>,
 }
 
 pub struct ConsumerClient;
@@ -68,12 +83,19 @@ impl ConsumerClient {
         let mut seen = HashSet::new();
         let mut batches = 0usize;
         let mut acked = 0usize;
+        let mut ack_latency_us = Vec::new();
         let mut sent_flow = false;
         let deadline = tokio::time::Instant::now() + opts.timeout;
 
         while tokio::time::Instant::now() < deadline {
             if let Some(expect) = opts.expect_records {
                 if seen.len() as u64 >= expect {
+                    let _ = tx.send(leave()).await;
+                    break;
+                }
+            }
+            if let Some(shared) = &opts.shared_progress {
+                if shared.acked.load(Ordering::Relaxed) >= shared.target {
                     let _ = tx.send(leave()).await;
                     break;
                 }
@@ -118,8 +140,23 @@ impl ConsumerClient {
                         drop(tx);
                         break;
                     }
+                    let ack_started = tokio::time::Instant::now();
+                    if !opts.ack_delay.is_zero() {
+                        tokio::time::sleep(opts.ack_delay).await;
+                    }
                     tx.send(ack(batch.batch_id)).await?;
+                    ack_latency_us.push(ack_started.elapsed().as_micros() as u64);
                     acked += 1;
+                    if let Some(shared) = &opts.shared_progress {
+                        let now = shared
+                            .acked
+                            .fetch_add(batch.records.len() as u64, Ordering::Relaxed)
+                            + batch.records.len() as u64;
+                        if now >= shared.target {
+                            let _ = tx.send(leave()).await;
+                            break;
+                        }
+                    }
                     if opts.duplicate_first_ack && acked == 1 {
                         tx.send(ack(batch.batch_id)).await?;
                     }
@@ -137,6 +174,7 @@ impl ConsumerClient {
             record_ids,
             batches,
             acked,
+            ack_latency_us,
         })
     }
 }

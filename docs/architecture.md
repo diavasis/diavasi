@@ -40,6 +40,7 @@ One Diavasi server hosts many independent consumer-group runtimes under a superv
 | Group runtime / supervision | Stage 3 complete (`GroupSupervisor`; see docs/tutorials/stage-03-group-runtime.md) |
 | Control plane / CLI | Stage 4 complete (`diavasi::control` + `diavasi` CLI; see docs/tutorials/stage-04-control-plane.md) |
 | Database adapters | Stage 6: PostgreSQL keyset reader ([ADR 0008](adr/0008-postgres-query-contract.md)). MongoDB, Redis, and ScyllaDB are still placeholders |
+| Performance / resource model | Stage 7: end-to-end Postgres benchmark and idle vs active group cost ([docs/bench/stage-07.md](bench/stage-07.md), [docs/resource-model.md](resource-model.md)) |
 
 ## Control plane (Stage 4)
 
@@ -52,6 +53,10 @@ Consumers connect with TLS gRPC (`diavasi.data.v1`) to a running group. The sess
 ## PostgreSQL adapter (Stage 6)
 
 A group bound to a `postgres` connection reads one declared table in a total order and feeds rows into the existing buffer, ack, and checkpoint path. Resume is the committed logical cursor, not a server-side cursor. See [ADR 0008](adr/0008-postgres-query-contract.md) and [docs/adapters/postgresql.md](adapters/postgresql.md).
+
+## Resource model (Stage 7)
+
+An idle running group is one owner task, a fetch ticker, a timeout ticker, and, for Postgres, one connection, with an empty buffer. An active group adds the configured buffer and the in-flight batches on each stream. Consumers per group, groups per process, and fetch-error restarts are unbounded on purpose. See [docs/resource-model.md](resource-model.md).
 
 ## Non-goals (initial releases)
 

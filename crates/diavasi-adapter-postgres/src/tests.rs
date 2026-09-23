@@ -790,6 +790,8 @@ async fn data_plane_consumes_postgres_rows() {
         idle_after_join: None,
         leave_after_join: false,
         duplicate_first_ack: false,
+        ack_delay: Duration::ZERO,
+        shared_progress: None,
         timeout: Duration::from_secs(10),
     })
     .await

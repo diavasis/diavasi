@@ -46,12 +46,12 @@ impl PostgresSource {
         match self.client.query(sql, params).await {
             Ok(rows) => Ok(rows),
             Err(err) => {
-                tracing::warn!("postgres fetch failed, reconnecting: {err}");
+                tracing::warn!("postgres fetch failed, reconnecting: {}", pg_error(&err));
                 self.client = connect(&self.endpoint).await?;
                 self.client
                     .query(sql, params)
                     .await
-                    .map_err(|err| err.to_string())
+                    .map_err(|err| pg_error(&err))
             }
         }
     }
@@ -86,6 +86,17 @@ impl RecordSource for PostgresSource {
     ) -> BoxFuture<'a, Result<Vec<Record>, SourceError>> {
         Box::pin(async move { self.fetch(cursor, limit).await })
     }
+}
+
+fn pg_error(err: &tokio_postgres::Error) -> String {
+    let mut message = err.to_string();
+    let mut source = std::error::Error::source(err);
+    while let Some(inner) = source {
+        message.push_str(": ");
+        message.push_str(&inner.to_string());
+        source = std::error::Error::source(inner);
+    }
+    message
 }
 
 fn build_query(

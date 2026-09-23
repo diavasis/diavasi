@@ -15,7 +15,7 @@ pub mod pb {
     tonic::include_proto!("diavasi.data.v1");
 }
 
-pub use client::{ConsumeReport, ConsumerClient, ConsumerOptions};
+pub use client::{ConsumeReport, ConsumerClient, ConsumerOptions, SharedProgress};
 pub use error_codes::*;
 pub use server::{DataPlaneConfig, serve_dataplane};
 pub use session::{DEFAULT_MAX_IN_FLIGHT, Effect, Phase, Session, Step};

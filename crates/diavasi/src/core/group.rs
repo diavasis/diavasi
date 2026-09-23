@@ -170,7 +170,7 @@ impl GroupEngine {
         self.ensure_dispatch()?;
         self.consumers.leave(id)?;
         let returned = self.inflight.take_for_consumer(id);
-        self.requeue_assignments(returned)?;
+        self.requeue_assignments(returned);
         Ok(())
     }
 
@@ -252,6 +252,13 @@ impl GroupEngine {
         })
     }
 
+    /// Return a batch to the buffer when the assignee will never ack it.
+    pub fn requeue_batch(&mut self, batch_id: BatchId) {
+        if let Some(assignment) = self.inflight.take(batch_id) {
+            self.requeue_assignments(vec![assignment]);
+        }
+    }
+
     pub fn ack(&mut self, batch_id: BatchId) -> CoreResult<()> {
         self.ensure_dispatch()?;
         let Some(assignment) = self.inflight.take(batch_id) else {
@@ -267,17 +274,29 @@ impl GroupEngine {
         self.ensure_dispatch()?;
         let timed_out = self.inflight.take_timed_out(now, self.config.batch_timeout);
         let n = timed_out.len();
-        self.requeue_assignments(timed_out)?;
+        self.requeue_assignments(timed_out);
         Ok(n)
     }
 
-    fn requeue_assignments(&mut self, assignments: Vec<Assignment>) -> CoreResult<()> {
-        // Preserve original order across assignments by pushing fronts in reverse.
-        let mut records: Vec<Record> = assignments.into_iter().flat_map(|a| a.records).collect();
-        while let Some(record) = records.pop() {
-            self.buffer.push_front(record)?;
+    fn requeue_assignments(&mut self, assignments: Vec<Assignment>) {
+        // Preserve original order by pushing each assignment's records front-first.
+        // A batch that does not fit stays in flight and is retried on a later tick.
+        for assignment in assignments.into_iter().rev() {
+            let extra_bytes: usize = assignment.records.iter().map(|r| r.byte_len()).sum();
+            let fits = self.buffer.len() + assignment.records.len()
+                <= self.config.max_buffer_records
+                && self.buffer.bytes().saturating_add(extra_bytes) <= self.config.max_buffer_bytes;
+            if !fits {
+                let _ = self.inflight.insert(assignment);
+                continue;
+            }
+            let mut records = assignment.records;
+            while let Some(record) = records.pop() {
+                self.buffer
+                    .push_front(record)
+                    .expect("batch fits in the buffer");
+            }
         }
-        Ok(())
     }
 
     fn ensure_dispatch(&self) -> CoreResult<()> {
@@ -458,6 +477,41 @@ mod tests {
         assert!(engine.inflight.get(b.id).is_none());
         let b2 = engine.assign_batch(&c).unwrap();
         assert_eq!(b2.records[0].ordering, b.records[0].ordering);
+    }
+
+    #[test]
+    fn timeout_keeps_the_batch_inflight_when_the_buffer_is_full() {
+        let mut config = cfg(6, 4, 2);
+        config.batch_timeout = Duration::from_millis(1);
+        let mut engine = GroupEngine::new(config).unwrap();
+        engine.start().unwrap();
+        let c = ConsumerId::new("c1").unwrap();
+        engine.join_consumer(c.clone()).unwrap();
+        let _ = engine.poll_fetch().unwrap();
+        let b = engine.assign_batch(&c).unwrap();
+        let _ = engine.poll_fetch().unwrap();
+        assert_eq!(engine.buffer_len(), 4);
+        std::thread::sleep(Duration::from_millis(5));
+        assert_eq!(engine.tick(Instant::now()).unwrap(), 1);
+        assert_eq!(engine.buffer_len(), 4);
+        assert!(engine.inflight.get(b.id).is_some());
+        engine.ack(b.id).unwrap();
+        assert!(engine.inflight.get(b.id).is_none());
+    }
+
+    #[test]
+    fn requeue_batch_returns_an_unacked_assignment() {
+        let mut engine = GroupEngine::new(cfg(4, 10, 2)).unwrap();
+        engine.start().unwrap();
+        let c = ConsumerId::new("c1").unwrap();
+        engine.join_consumer(c.clone()).unwrap();
+        let _ = engine.poll_fetch().unwrap();
+        let batch = engine.assign_batch(&c).unwrap();
+        assert_eq!(engine.inflight_len(), 1);
+        engine.requeue_batch(batch.id);
+        assert_eq!(engine.inflight_len(), 0);
+        let again = engine.assign_batch(&c).unwrap();
+        assert_eq!(again.records[0].ordering, batch.records[0].ordering);
     }
 
     #[test]

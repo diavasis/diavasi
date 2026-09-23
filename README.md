@@ -15,7 +15,7 @@ connection + query + ordering contract + consumer group
 
 Progress is a logical checkpoint, not a live database cursor. Delivery is at-least-once: on ambiguity, Diavasi replays rather than skips. Control plane (HTTP + CLI) and data plane stay separate.
 
-Early development: Stages 0–6 are in place (transport bake-off, core domain, durable store, group supervision, control plane, TLS gRPC data plane, PostgreSQL keyset adapter). MongoDB, Redis, and ScyllaDB adapters are still ahead.
+Early development: Stages 0–7 are in place (transport bake-off, core domain, durable store, group supervision, control plane, TLS gRPC data plane, PostgreSQL keyset adapter, end-to-end benchmark and resource model). MongoDB, Redis, and ScyllaDB adapters are still ahead.
 
 ## Roadmap
 
@@ -29,7 +29,7 @@ Early development: Stages 0–6 are in place (transport bake-off, core domain, d
 | v0.5.0 | Protocol v1 data plane (TLS gRPC, auth, backpressure) | Done |
 | v0.5.0/Demo | Livebook: server, synthetic group, Python and Elixir clients ([notebook](clients/elixir/notebooks/demo.livemd)) | Next |
 | v0.6.0 | PostgreSQL adapter. After it lands, Docker Compose replaces the synthetic source | Done |
-| v0.7.0  | End-to-end Postgres benchmarks / resource model | Planned |
+| v0.7.0  | End-to-end Postgres benchmarks / resource model | Done |
 | v0.8.0–v0.10.0 | MongoDB, Redis, ScyllaDB adapters | Planned |
 | v0.11.0  | Thin SDKs (Elixir, Rust, Python, Go) | Planned |
 | v0.12.0  | Metrics, soak, operator diagnostics. First a ratatui client of the HTTP API, then a Tauri 2 app on the same API | Planned |
@@ -96,6 +96,7 @@ Use `--output json` for machine-readable responses.
 - Stage 4 walkthrough: [docs/tutorials/stage-04-control-plane.md](docs/tutorials/stage-04-control-plane.md)
 - Control-plane ADR: [docs/adr/0005-control-plane.md](docs/adr/0005-control-plane.md)
 - Transport bake-off: [docs/transport-benchmark.md](docs/transport-benchmark.md)
+- Postgres end-to-end benchmark: [docs/bench/stage-07.md](docs/bench/stage-07.md)
 
 ## Development
 
@@ -108,20 +109,10 @@ docker compose up -d
 Postgres is published on host port 5433 so it does not collide with a local server on 5432. The adapter tests use `postgres://diavasi:diavasi@127.0.0.1:5433/diavasi`. MongoDB listens on `27017`, Redis on `6379`, and ScyllaDB on `9042`. Images are the smallest official variants: `postgres:16-alpine`, `redis:7-alpine`, `mongo:7` (no Alpine build), and `scylladb/scylla:2026.1`.
 
 ```bash
-cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all --all-features
-
-cargo deny check
+./scripts/check.sh
 ```
-### Coverage
 
-Set `DATABASE_URL` so the PostgreSQL adapter tests run. Without it they skip and the adapter is reported as uncovered.
-
-```bash
-export DATABASE_URL=postgres://diavasi:diavasi@127.0.0.1:5433/diavasi
-cargo llvm-cov --workspace --all-features --ignore-filename-regex 'transport_bench' --summary-only
-```
+The script runs `cargo fmt`, `cargo clippy`, `cargo test`, `cargo deny`, and `cargo llvm-cov`. It keeps `DATABASE_URL` when that is already set, and otherwise uses the Compose URL above so the PostgreSQL adapter tests run. Without a reachable database those tests skip and the adapter is reported as uncovered. Line coverage must stay at or above 85%. The transport harness and the end-to-end bench are excluded from that number.
 
 ## Workspace
 
