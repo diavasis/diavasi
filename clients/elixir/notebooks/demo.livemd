@@ -226,6 +226,82 @@ Kino.Layout.grid(
 )
 ```
 
+## Same group
+
+Python and Elixir join group `shared` together. Each stops after 10 records. The ids they ack are disjoint, and together they are `1` through `20`.
+
+```elixir
+create.("shared", 20, 5)
+
+python_task =
+  Task.async(fn ->
+    System.cmd(
+      python,
+      [
+        "-m",
+        "diavasi_data",
+        "--addr",
+        data_addr,
+        "--ca",
+        ca,
+        "--token",
+        token,
+        "--group",
+        "shared",
+        "--consumer",
+        "py-share",
+        "--total",
+        "10",
+        "--max-in-flight",
+        "1",
+        "--print-ids"
+      ],
+      cd: python_dir,
+      env: [{"PYTHONPATH", python_dir}],
+      stderr_to_stdout: true
+    )
+  end)
+
+{:ok, elixir_share} =
+  Diavasi.Data.Client.run(
+    addr: data_addr,
+    ca: ca,
+    token: token,
+    group: "shared",
+    consumer: "ex-share",
+    total: 10,
+    max_in_flight: 1
+  )
+
+{python_out, 0} = Task.await(python_task, 45_000)
+
+python_share =
+  python_out
+  |> String.split("\n", trim: true)
+  |> Enum.find_value([], fn line ->
+    case String.split(line) do
+      ["ids" | ids] -> Enum.map(ids, &String.to_integer/1)
+      _ -> nil
+    end
+  end)
+
+shared = MapSet.new(1..20)
+elixir_set = MapSet.new(elixir_share)
+python_set = MapSet.new(python_share)
+overlap = MapSet.intersection(elixir_set, python_set) |> MapSet.to_list() |> Enum.sort()
+union = MapSet.union(elixir_set, python_set)
+
+unless MapSet.equal?(union, shared) and overlap == [] do
+  raise "shared group split was not a partition: elixir=#{inspect(elixir_share)} python=#{inspect(python_share)}"
+end
+
+Kino.DataTable.new([
+  %{consumer: "ex-share", count: length(elixir_share), record_ids: Enum.join(elixir_share, " ")},
+  %{consumer: "py-share", count: length(python_share), record_ids: Enum.join(python_share, " ")},
+  %{consumer: "overlap", count: length(overlap), record_ids: Enum.join(overlap, " ")}
+])
+```
+
 ## Disconnect and requeue
 
 The first consumer acks one batch of 5, then drops the connection on the next batch without acking it. Those record ids are requeued. The second consumer reads the 15 records still outstanding, including that batch.
