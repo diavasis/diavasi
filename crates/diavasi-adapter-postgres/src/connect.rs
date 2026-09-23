@@ -108,11 +108,7 @@ pub async fn connect(endpoint: &PgEndpoint) -> Result<Client, String> {
         });
         Ok(client)
     } else {
-        let (client, connection) = endpoint
-            .config
-            .connect(NoTls)
-            .await
-            .map_err(connect_err)?;
+        let (client, connection) = endpoint.config.connect(NoTls).await.map_err(connect_err)?;
         tokio::spawn(async move {
             if let Err(err) = connection.await {
                 tracing::debug!("postgres connection ended: {err}");
