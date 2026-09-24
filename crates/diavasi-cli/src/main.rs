@@ -36,6 +36,14 @@ enum OutputFormat {
     Json,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum AdapterName {
+    Postgres,
+    #[value(alias = "mongo")]
+    Mongodb,
+    Redis,
+}
+
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Run the local control-plane HTTP server.
@@ -61,6 +69,30 @@ enum Commands {
     },
     /// Print library version.
     Version,
+    /// Seed Postgres, MongoDB, or Redis, then consume the rows and print throughput.
+    Test {
+        /// `postgres`, `mongo` / `mongodb`, or `redis`.
+        adapter: AdapterName,
+        /// Records to insert.
+        #[arg(short = 'n', long, default_value_t = 10_000)]
+        records: u64,
+        /// Bytes stored in each payload field.
+        #[arg(short = 'b', long, default_value_t = 1024)]
+        payload_bytes: usize,
+        #[arg(
+            long,
+            env = "DATABASE_URL",
+            default_value = "postgres://diavasi:diavasi@127.0.0.1:5433/diavasi"
+        )]
+        database_url: String,
+        #[arg(long, env = "MONGODB_URL", default_value = "mongodb://127.0.0.1:27017")]
+        mongodb_url: String,
+        #[arg(long, env = "REDIS_URL", default_value = "redis://127.0.0.1:6379")]
+        redis_url: String,
+        /// Leave the seeded table, collection, or stream in place.
+        #[arg(long)]
+        keep: bool,
+    },
     /// Server status.
     Status,
     #[command(subcommand)]
@@ -159,6 +191,7 @@ async fn main() -> ExitCode {
     }
 }
 
+mod adapter_test;
 mod sources;
 
 async fn run(cli: Cli) -> Result<(), ExitCode> {
@@ -202,6 +235,37 @@ async fn run(cli: Cli) -> Result<(), ExitCode> {
             .await
             {
                 eprintln!("error: {e}");
+                return Err(ExitCode::FAILURE);
+            }
+            Ok(())
+        }
+        Commands::Test {
+            adapter,
+            records,
+            payload_bytes,
+            database_url,
+            mongodb_url,
+            redis_url,
+            keep,
+        } => {
+            if let Err(err) = adapter_test::run(adapter_test::AdapterTest {
+                adapter: match adapter {
+                    AdapterName::Postgres => adapter_test::AdapterKind::Postgres,
+                    AdapterName::Mongodb => adapter_test::AdapterKind::Mongodb,
+                    AdapterName::Redis => adapter_test::AdapterKind::Redis,
+                },
+                records,
+                payload_bytes,
+                database_url,
+                mongodb_url,
+                redis_url,
+                keep,
+                object: "diavasi_test".into(),
+                json: matches!(cli.output, OutputFormat::Json),
+            })
+            .await
+            {
+                eprintln!("error: {err}");
                 return Err(ExitCode::FAILURE);
             }
             Ok(())
@@ -417,7 +481,7 @@ impl Client {
                 });
                 Ok(())
             }
-            Commands::Version | Commands::Serve { .. } => unreachable!(),
+            Commands::Version | Commands::Serve { .. } | Commands::Test { .. } => unreachable!(),
         }
     }
 

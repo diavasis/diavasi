@@ -31,7 +31,7 @@ jobs:
           if tag != f"v{version}":
               raise SystemExit(f"tag {tag} does not match workspace version {version}")
           deps = data["workspace"]["dependencies"]
-          for name in ("diavasi", "diavasi-adapter-postgres", "diavasi-adapter-mongodb"):
+          for name in ("diavasi", "diavasi-adapter-postgres", "diavasi-adapter-mongodb", "diavasi-adapter-redis"):
               got = deps[name]["version"]
               if got != version:
                   raise SystemExit(f"{name} dependency version {got} != {version}")
@@ -56,4 +56,5 @@ jobs:
           publish diavasi
           publish diavasi-adapter-postgres
           publish diavasi-adapter-mongodb
+          publish diavasi-adapter-redis
           publish diavasi-cli

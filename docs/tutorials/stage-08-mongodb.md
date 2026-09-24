@@ -10,7 +10,7 @@ Related code: `crates/diavasi-adapter-mongodb/`. Decision: [ADR 0009](../adr/000
 
 A group with no `connection_id` stays synthetic. A connection kind the router does not know fails at create.
 
-Still absent: Redis, ScyllaDB, and an S3 adapter.
+Still absent: ScyllaDB and an S3 adapter. Stage 9 later adds Redis Streams.
 
 ## 2. Collection and order
 

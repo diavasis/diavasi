@@ -97,6 +97,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
+name = "arc-swap"
+version = "1.9.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c049c0be4daef0b145cb3555416b3b8ef5b7888a38aea1a3a155801fe7b0810b"
+dependencies = [
+ "rustversion",
+]
+
+[[package]]
 name = "asn1-rs"
 version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -277,6 +286,15 @@ dependencies = [
  "tower-layer",
  "tower-service",
  "tracing",
+]
+
+[[package]]
+name = "backon"
+version = "1.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cffb0e931875b666fc4fcb20fee52e9bbd1ef836fd9e9e04ec21555f9f85f7ef"
+dependencies = [
+ "fastrand",
 ]
 
 [[package]]
@@ -510,7 +528,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cfc320937d09e6de266b31b9afb480f197d7a861be86be7cb2ea7e5d1bfffc5e"
 dependencies = [
  "bytes",
+ "futures-core",
  "memchr",
+ "pin-project-lite",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -888,7 +910,14 @@ dependencies = [
 name = "diavasi-adapter-redis"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "diavasi",
+ "futures",
+ "redis",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -907,8 +936,12 @@ dependencies = [
  "diavasi",
  "diavasi-adapter-mongodb",
  "diavasi-adapter-postgres",
+ "diavasi-adapter-redis",
  "futures",
+ "mongodb",
+ "redis",
  "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "tempfile",
@@ -2689,6 +2722,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "redis"
+version = "0.29.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1bc42f3a12fd4408ce64d8efef67048a924e543bd35c6591c0447fda9054695f"
+dependencies = [
+ "arc-swap",
+ "backon",
+ "bytes",
+ "combine",
+ "futures-channel",
+ "futures-util",
+ "itoa",
+ "num-bigint",
+ "percent-encoding",
+ "pin-project-lite",
+ "rustls",
+ "rustls-native-certs",
+ "ryu",
+ "sha1_smol",
+ "socket2 0.5.10",
+ "tokio",
+ "tokio-rustls",
+ "tokio-util",
+ "url",
+]
+
+[[package]]
 name = "redox_syscall"
 version = "0.5.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3103,6 +3163,12 @@ dependencies = [
  "cpufeatures 0.3.1",
  "digest",
 ]
+
+[[package]]
+name = "sha1_smol"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbfa15b3dddfee50a0fff136974b3e1bde555604ba463834a7eb7deb6417705d"
 
 [[package]]
 name = "sha2"
