@@ -128,6 +128,15 @@ diavasi test redis -n 10000 -b 1024
 diavasi test scylla -n 10000 -b 1024
 ```
 
+ScyllaDB listens on `127.0.0.1:9042`. The first start can take a minute before that port accepts connections. From the repo root:
+
+```bash
+docker compose up -d scylla
+cargo build -p diavasi-cli
+export PATH="$PWD/target/debug:$PATH"
+diavasi test scylla -n 10000 -b 1024
+```
+
 `--output json` prints one JSON object instead of the text lines. Postgres uses `DATABASE_URL` or `postgres://diavasi:diavasi@127.0.0.1:5433/diavasi`. MongoDB uses `MONGODB_URL`, Redis uses `REDIS_URL`, and ScyllaDB uses `SCYLLA_URL` or `127.0.0.1:9042`. The ScyllaDB seed is one partition, `bucket = 0`, clustering column `id`, payload column `body`.
 
 ## Workspace
