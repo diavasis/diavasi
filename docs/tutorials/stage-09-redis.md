@@ -10,7 +10,7 @@ Related code: `crates/diavasi-adapter-redis/`. Decision: [ADR 0010](../adr/0010-
 
 A group with no `connection_id` stays synthetic. A connection kind the router does not know fails at create.
 
-Still absent: ScyllaDB and an S3 adapter. Hashes, lists, sets, and sorted sets are not sources. They do not have a Redis-enforced resume id.
+Still absent: an S3 adapter. Stage 10 later adds ScyllaDB. Hashes, lists, sets, and sorted sets are not sources. They do not have a Redis-enforced resume id.
 
 ## 2. Stream and order
 

@@ -19,6 +19,7 @@ diavasi = { workspace = true, default-features = false }
 diavasi-adapter-mongodb = { workspace = true }
 diavasi-adapter-postgres = { workspace = true }
 diavasi-adapter-redis = { workspace = true }
+diavasi-adapter-scylla = { workspace = true }
 futures.workspace = true
 mongodb = "3"
 redis = { version = "0.29", features = ["tokio-comp", "connection-manager"] }

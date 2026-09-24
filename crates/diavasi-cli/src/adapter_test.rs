@@ -12,6 +12,9 @@ use diavasi::store::StoreKey;
 use diavasi_adapter_mongodb::connect::{MongoEndpoint, connect as connect_mongo};
 use diavasi_adapter_postgres::connect::{PgEndpoint, connect as connect_pg};
 use diavasi_adapter_redis::connect::{RedisEndpoint, connect as connect_redis};
+use diavasi_adapter_scylla::connect::{
+    ScyllaEndpoint, connect as connect_scylla, execute as execute_scylla, seed_bucket,
+};
 use mongodb::IndexModel;
 use mongodb::bson::{Document, doc};
 use mongodb::options::IndexOptions;
@@ -24,6 +27,7 @@ pub enum AdapterKind {
     Postgres,
     Mongodb,
     Redis,
+    Scylla,
 }
 
 impl AdapterKind {
@@ -32,6 +36,7 @@ impl AdapterKind {
             Self::Postgres => "postgres",
             Self::Mongodb => "mongodb",
             Self::Redis => "redis",
+            Self::Scylla => "scylla",
         }
     }
 }
@@ -43,6 +48,7 @@ pub struct AdapterTest {
     pub database_url: String,
     pub mongodb_url: String,
     pub redis_url: String,
+    pub scylla_url: String,
     pub keep: bool,
     pub object: String,
     pub json: bool,
@@ -90,6 +96,7 @@ async fn prepare(test: &AdapterTest) -> Result<Prepared, String> {
         AdapterKind::Postgres => prepare_postgres(test).await,
         AdapterKind::Mongodb => prepare_mongodb(test).await,
         AdapterKind::Redis => prepare_redis(test).await,
+        AdapterKind::Scylla => prepare_scylla(test).await,
     }
 }
 
@@ -210,6 +217,41 @@ async fn prepare_redis(test: &AdapterTest) -> Result<Prepared, String> {
     })
 }
 
+async fn prepare_scylla(test: &AdapterTest) -> Result<Prepared, String> {
+    let endpoint = ScyllaEndpoint::from_url(&test.scylla_url)?;
+    let session = connect_scylla(&endpoint).await?;
+    let table = &test.object;
+    execute_scylla(
+        &session,
+        "CREATE KEYSPACE IF NOT EXISTS diavasi WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}",
+    )
+    .await?;
+    execute_scylla(&session, &format!("DROP TABLE IF EXISTS diavasi.{table}")).await?;
+    execute_scylla(
+        &session,
+        &format!(
+            "CREATE TABLE diavasi.{table} (bucket int, id bigint, body text, PRIMARY KEY (bucket, id))"
+        ),
+    )
+    .await?;
+    let payload = "x".repeat(test.payload_bytes);
+    seed_bucket(&session, "diavasi", table, test.records, &payload).await?;
+    let mut endpoint = endpoint;
+    endpoint.keyspace = Some("diavasi".into());
+    Ok(Prepared {
+        kind: "scylla".into(),
+        config_json: endpoint.config_json(),
+        secret: "unused".into(),
+        source_spec: serde_json::json!({
+            "keyspace": "diavasi",
+            "table": table,
+            "partition": {"bucket": 0},
+            "columns": ["body"],
+        }),
+        ordering_contract: "scylla-partition".into(),
+    })
+}
+
 async fn cleanup(test: &AdapterTest) {
     match test.adapter {
         AdapterKind::Postgres => {
@@ -236,6 +278,17 @@ async fn cleanup(test: &AdapterTest) {
             if let Ok(endpoint) = RedisEndpoint::from_url(&test.redis_url) {
                 if let Ok(mut conn) = connect_redis(&endpoint).await {
                     let _: redis::RedisResult<()> = conn.del(&test.object).await;
+                }
+            }
+        }
+        AdapterKind::Scylla => {
+            if let Ok(endpoint) = ScyllaEndpoint::from_url(&test.scylla_url) {
+                if let Ok(session) = connect_scylla(&endpoint).await {
+                    let _ = execute_scylla(
+                        &session,
+                        &format!("DROP TABLE IF EXISTS diavasi.{}", test.object),
+                    )
+                    .await;
                 }
             }
         }
@@ -484,6 +537,7 @@ mod tests {
                 .unwrap_or_else(|_| "mongodb://127.0.0.1:27017".into()),
             redis_url: std::env::var("REDIS_URL")
                 .unwrap_or_else(|_| "redis://127.0.0.1:6379".into()),
+            scylla_url: std::env::var("SCYLLA_URL").unwrap_or_else(|_| "127.0.0.1:9042".into()),
             keep: false,
             object: object.into(),
             json: true,
@@ -541,5 +595,20 @@ mod tests {
         run(sample(AdapterKind::Redis, &object))
             .await
             .expect("redis");
+    }
+
+    #[tokio::test]
+    async fn scylla_seed_and_consume() {
+        if std::env::var("SCYLLA_URL")
+            .ok()
+            .filter(|url| !url.is_empty())
+            .is_none()
+        {
+            return;
+        }
+        let object = format!("dt_sy_{}", std::process::id());
+        run(sample(AdapterKind::Scylla, &object))
+            .await
+            .expect("scylla");
     }
 }

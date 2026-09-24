@@ -39,7 +39,7 @@ One Diavasi server hosts many independent consumer-group runtimes under a superv
 | Durable metadata store | Stage 2 complete (`StateStore` + redb; see docs/tutorials/stage-02-durable-store.md) |
 | Group runtime / supervision | Stage 3 complete (`GroupSupervisor`; see docs/tutorials/stage-03-group-runtime.md) |
 | Control plane / CLI | Stage 4 complete (`diavasi::control` + `diavasi` CLI; see docs/tutorials/stage-04-control-plane.md) |
-| Database adapters | Stage 6: PostgreSQL keyset reader ([ADR 0008](adr/0008-postgres-query-contract.md)). Stage 8: MongoDB find keyset ([ADR 0009](adr/0009-mongodb-query-contract.md)). Stage 9: Redis Streams ([ADR 0010](adr/0010-redis-query-contract.md)). ScyllaDB is still a placeholder |
+| Database adapters | Stage 6: PostgreSQL keyset reader ([ADR 0008](adr/0008-postgres-query-contract.md)). Stage 8: MongoDB find keyset ([ADR 0009](adr/0009-mongodb-query-contract.md)). Stage 9: Redis Streams ([ADR 0010](adr/0010-redis-query-contract.md)). Stage 10: ScyllaDB partition keyset and token scan ([ADR 0011](adr/0011-scylla-query-contract.md)) |
 | Performance / resource model | Stage 7: end-to-end Postgres benchmark and idle vs active group cost ([docs/bench/stage-07.md](bench/stage-07.md), [docs/resource-model.md](resource-model.md)) |
 
 ## Control plane (Stage 4)
@@ -60,7 +60,11 @@ A group bound to a `mongodb` connection reads one collection with `find` in a de
 
 ## Redis adapter (Stage 9)
 
-A group bound to a `redis` connection reads one stream with `XGROUP SETID` and `XREADGROUP`, then feeds entries into that same path. Resume is the committed stream id, not the Redis pending list. `diavasi serve` routes `postgres`, `mongodb`, and `redis`. See [ADR 0010](adr/0010-redis-query-contract.md) and [docs/adapters/redis.md](adapters/redis.md).
+A group bound to a `redis` connection reads one stream with `XGROUP SETID` and `XREADGROUP`, then feeds entries into that same path. Resume is the committed stream id, not the Redis pending list. See [ADR 0010](adr/0010-redis-query-contract.md) and [docs/adapters/redis.md](adapters/redis.md).
+
+## ScyllaDB adapter (Stage 10)
+
+A group bound to a `scylla` connection reads one partition in clustering order, or walks the ring in token order when `scan` is `token`. Resume is the committed logical key, not a driver paging cookie. `diavasi serve` routes `postgres`, `mongodb`, `redis`, and `scylla`. See [ADR 0011](adr/0011-scylla-query-contract.md) and [docs/adapters/scylla.md](adapters/scylla.md).
 
 ## Resource model (Stage 7)
 

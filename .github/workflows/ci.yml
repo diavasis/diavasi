@@ -84,10 +84,22 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      scylla:
+        image: scylladb/scylla:2026.1
+        command: --smp 1 --memory 1G --overprovisioned 1
+        ports:
+          - 9042:9042
+        options: >-
+          --health-cmd "cqlsh -e 'SELECT now() FROM system.local'"
+          --health-interval 15s
+          --health-timeout 20s
+          --health-start-period 60s
+          --health-retries 12
     env:
       DATABASE_URL: postgres://diavasi:diavasi@localhost:5432/diavasi
       MONGODB_URL: mongodb://127.0.0.1:27017
       REDIS_URL: redis://127.0.0.1:6379
+      SCYLLA_URL: 127.0.0.1:9042
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
