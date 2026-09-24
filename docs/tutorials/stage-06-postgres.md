@@ -8,9 +8,9 @@ Related code: `crates/diavasi-adapter-postgres/`. Decision: [ADR 0008](../adr/00
 
 `diavasi serve` installs a Postgres source factory. A group whose connection kind is `postgres` must carry `source_spec`. The owner task fetches a keyset page and `GroupEngine::ingest` pushes it into the same buffer the synthetic source uses. Ack and checkpoint are unchanged.
 
-A group with no `connection_id`, or a connection whose kind is not `postgres`, stays synthetic.
+A group with no `connection_id` stays synthetic. A connection kind the installed factory does not support fails at create.
 
-Still absent: MongoDB, Redis, ScyllaDB, the Stage 7 benchmark, and a Docker Compose demo.
+Still absent after this stage: MongoDB, Redis, ScyllaDB, the Stage 7 benchmark, and a Docker Compose demo. Stage 8 later adds MongoDB.
 
 ## 2. Table and order
 

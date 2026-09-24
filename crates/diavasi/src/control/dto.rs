@@ -33,7 +33,7 @@ pub struct GroupCreateRequest {
     /// Optional connection this group reads.
     #[serde(default)]
     pub connection_id: Option<String>,
-    /// Adapter source contract. Required for a postgres connection.
+    /// Adapter source contract. Required when `connection_id` is set.
     #[serde(default)]
     pub source_spec: Option<serde_json::Value>,
 }

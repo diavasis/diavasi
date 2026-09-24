@@ -119,8 +119,6 @@ fn cli_lifecycle_against_serve() {
                 "g1",
                 "--total-records",
                 "50",
-                "--connection-id",
-                "c1",
             ],
         ),
         "group create",

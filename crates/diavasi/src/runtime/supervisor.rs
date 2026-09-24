@@ -151,17 +151,22 @@ impl<S: StateStore + 'static> GroupSupervisor<S> {
                 connection_id.clone(),
             ))
         })?;
-        if connection.kind != "postgres" {
-            return Ok(None);
-        }
         let Some(source_spec) = group.source_spec else {
-            return Err(RuntimeError::Source(
-                "postgres connection requires source_spec".into(),
-            ));
+            return Err(RuntimeError::Source(format!(
+                "{} connection requires source_spec",
+                connection.kind
+            )));
         };
-        let factory = self.source_factory.as_ref().ok_or_else(|| {
-            RuntimeError::Source("postgres source factory is not installed".into())
-        })?;
+        let factory = self
+            .source_factory
+            .as_ref()
+            .ok_or_else(|| RuntimeError::Source("source factory is not installed".into()))?;
+        if !factory.supports(&connection.kind) {
+            return Err(RuntimeError::Source(format!(
+                "unsupported connection kind {}",
+                connection.kind
+            )));
+        }
         let key = self
             .store_key
             .as_ref()

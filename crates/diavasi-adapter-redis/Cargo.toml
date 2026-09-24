@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 description = "Redis source adapter for Diavasi (Stage 9)"
+publish = false
 
 [dependencies]
 diavasi = { workspace = true, default-features = false }

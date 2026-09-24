@@ -138,32 +138,35 @@ impl ControlService {
                 .store
                 .get_connection(cid)?
                 .ok_or_else(|| ControlError::NotFound(format!("connection not found: {cid}")))?;
-            if connection.kind == "postgres" {
-                let source_spec = req.source_spec.clone().ok_or_else(|| {
-                    ControlError::BadRequest("postgres connection requires source_spec".into())
+            let source_spec = req.source_spec.clone().ok_or_else(|| {
+                ControlError::BadRequest(format!(
+                    "{} connection requires source_spec",
+                    connection.kind
+                ))
+            })?;
+            let factory = self
+                .supervisor
+                .lock()
+                .await
+                .source_factory()
+                .ok_or_else(|| {
+                    ControlError::BadRequest("source factory is not installed".into())
                 })?;
-                let factory = self
-                    .supervisor
-                    .lock()
-                    .await
-                    .source_factory()
-                    .ok_or_else(|| {
-                        ControlError::BadRequest("postgres source factory is not installed".into())
-                    })?;
-                let secret = open_secret(&self.key, &connection.sealed_secret)?;
-                factory
-                    .validate(SourceOpen {
-                        connection,
-                        source_spec,
-                        secret,
-                    })
-                    .await
-                    .map_err(ControlError::BadRequest)?;
-            } else if req.source_spec.is_some() {
-                return Err(ControlError::BadRequest(
-                    "source_spec requires a postgres connection".into(),
-                ));
+            if !factory.supports(&connection.kind) {
+                return Err(ControlError::BadRequest(format!(
+                    "unsupported connection kind {}",
+                    connection.kind
+                )));
             }
+            let secret = open_secret(&self.key, &connection.sealed_secret)?;
+            factory
+                .validate(SourceOpen {
+                    connection,
+                    source_spec,
+                    secret,
+                })
+                .await
+                .map_err(ControlError::BadRequest)?;
         } else if req.source_spec.is_some() {
             return Err(ControlError::BadRequest(
                 "source_spec requires connection_id".into(),
