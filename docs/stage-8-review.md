@@ -39,7 +39,7 @@
 ./scripts/check.sh
 ```
 
-CI sets `DATABASE_URL` and `MONGODB_URL` so both adapter suites run. A local `cargo test` without those variables still passes; those tests return immediately.
+The `integration` CI job sets `DATABASE_URL` and `MONGODB_URL` so both adapter suites run. The other jobs leave those variables unset. A local `cargo test` without them still passes; those tests return immediately.
 
 ## Stop
 
