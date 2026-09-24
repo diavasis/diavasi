@@ -34,11 +34,12 @@ A batch that times out, or an assign whose caller is gone, returns to the buffer
 | Records in one batch | `batch_max_records` |
 | Unacked batches on one stream | `max_in_flight` |
 | Postgres connections for one running group | 1 |
+| MongoDB clients for one running group | 1 |
 
 ## What is unbounded on purpose
 
 - Consumers per group. Each consumer is another gRPC stream and another in-flight window. A cap here would reject a join that the crash-recovery path needs to replay.
-- Groups per process. Each running group adds one owner, two tickers, and, for Postgres, one connection. The operator's bound is how many groups they start.
+- Groups per process. Each running group adds one owner, two tickers, and one source client when the group is bound to Postgres or MongoDB. The operator's bound is how many groups they start.
 - Supervisor restarts after a fetch error. The group task sleeps 200ms, exits, and is opened again from the committed cursor. A restart cap would stop recovery.
 
 ## What the Stage 7 measurement showed

@@ -159,6 +159,8 @@ async fn main() -> ExitCode {
     }
 }
 
+mod sources;
+
 async fn run(cli: Cli) -> Result<(), ExitCode> {
     match cli.command {
         Commands::Version => {
@@ -195,9 +197,7 @@ async fn run(cli: Cli) -> Result<(), ExitCode> {
                 store_key,
                 tls_cert,
                 tls_key,
-                source_factory: Some(std::sync::Arc::new(
-                    diavasi_adapter_postgres::PostgresFactory,
-                )),
+                source_factory: Some(std::sync::Arc::new(sources::RoutingFactory::installed())),
             })
             .await
             {

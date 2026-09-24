@@ -26,8 +26,18 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      mongo:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval db.adminCommand('ping').ok"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     env:
       DATABASE_URL: postgres://diavasi:diavasi@localhost:5432/diavasi
+      MONGODB_URL: mongodb://127.0.0.1:27017
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -43,6 +53,8 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: test
         run: cargo test --all --all-features
+      - name: package
+        run: cargo publish --workspace --dry-run --locked
       - name: transport smoke tcp
         run: >
           cargo run -p diavasi --bin diavasi-transport-bench --features transport-bench --
@@ -83,8 +95,18 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      mongo:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval db.adminCommand('ping').ok"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     env:
       DATABASE_URL: postgres://diavasi:diavasi@localhost:5432/diavasi
+      MONGODB_URL: mongodb://127.0.0.1:27017
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

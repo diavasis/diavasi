@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 description = "Durable consumer groups over existing database queries"
+readme = "../../README.md"
 
 [features]
 default = ["transport-bench"]

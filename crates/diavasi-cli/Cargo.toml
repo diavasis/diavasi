@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 description = "Diavasi administration CLI"
+readme = "../../README.md"
 
 [[bin]]
 name = "diavasi"
@@ -15,7 +16,9 @@ path = "src/main.rs"
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive", "env"] }
 diavasi = { workspace = true, default-features = false }
+diavasi-adapter-mongodb = { workspace = true }
 diavasi-adapter-postgres = { workspace = true }
+futures.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

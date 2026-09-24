@@ -5,7 +5,18 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "MongoDB source adapter for Diavasi (Stage 8)"
+description = "MongoDB source adapter for Diavasi"
+readme = "../../README.md"
 
 [dependencies]
+bytes.workspace = true
 diavasi = { workspace = true, default-features = false }
+futures.workspace = true
+mongodb = "3"
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["full"] }
