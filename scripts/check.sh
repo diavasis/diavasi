@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Format, lint, test, license check, and coverage.
-# Uses DATABASE_URL when set. Otherwise the Compose Postgres on port 5433,
-# so the adapter tests run and show up in coverage.
+# Uses DATABASE_URL, MONGODB_URL, and REDIS_URL when set. Otherwise the
+# Compose Postgres on port 5433, MongoDB on port 27017, and Redis on port
+# 6379, so the adapter tests run and show up in coverage.
 
 set -euo pipefail
 
@@ -9,6 +10,14 @@ cd "$(dirname "$0")/.."
 
 if [[ -z "${DATABASE_URL:-}" ]]; then
   export DATABASE_URL="postgres://diavasi:diavasi@127.0.0.1:5433/diavasi"
+fi
+
+if [[ -z "${MONGODB_URL:-}" ]]; then
+  export MONGODB_URL="mongodb://127.0.0.1:27017"
+fi
+
+if [[ -z "${REDIS_URL:-}" ]]; then
+  export REDIS_URL="redis://127.0.0.1:6379"
 fi
 
 # Library line coverage stays near 88% when the Postgres adapter tests run.

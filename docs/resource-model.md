@@ -9,10 +9,11 @@ A group that is running and has no consumers, or whose buffer is empty:
 - One owner task. It is the only task that mutates that group's engine.
 - One fetch ticker (default 5ms) and one timeout ticker (default 25ms).
 - One PostgreSQL connection when the group is bound to `postgres`, including the task that drives that connection. Consumer count does not add connections.
+- One MongoDB client when the group is bound to `mongodb`, and one Redis connection when the group is bound to `redis`.
 - An empty buffer. `max_buffer_records` and `max_buffer_bytes` are reserved as caps, not allocated up front.
 - A redb group record. Checkpoint bytes are written when an ack advances the committed cursor, not on a timer.
 
-A group with no `connection_id`, or a connection whose kind is not `postgres`, has the same tasks and no database connection. Its source is the in-process synthetic generator.
+A group with no `connection_id` has the same tasks and no database connection. Its source is the in-process synthetic generator.
 
 ## Active group
 
@@ -34,11 +35,13 @@ A batch that times out, or an assign whose caller is gone, returns to the buffer
 | Records in one batch | `batch_max_records` |
 | Unacked batches on one stream | `max_in_flight` |
 | Postgres connections for one running group | 1 |
+| MongoDB clients for one running group | 1 |
+| Redis connections for one running group | 1 |
 
 ## What is unbounded on purpose
 
 - Consumers per group. Each consumer is another gRPC stream and another in-flight window. A cap here would reject a join that the crash-recovery path needs to replay.
-- Groups per process. Each running group adds one owner, two tickers, and, for Postgres, one connection. The operator's bound is how many groups they start.
+- Groups per process. Each running group adds one owner, two tickers, and one source client when the group is bound to Postgres, MongoDB, or Redis. The operator's bound is how many groups they start.
 - Supervisor restarts after a fetch error. The group task sleeps 200ms, exits, and is opened again from the committed cursor. A restart cap would stop recovery.
 
 ## What the Stage 7 measurement showed

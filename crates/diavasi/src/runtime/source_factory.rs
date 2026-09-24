@@ -12,6 +12,14 @@ pub struct SourceOpen {
 
 /// Installed by the process that links adapter crates. `diavasi` does not depend on them.
 pub trait SourceFactory: Send + Sync {
+    /// Adapter label this factory opens, matching `ConnectionRecord::kind`.
+    fn kind(&self) -> &str;
+
+    /// A router overrides this to accept every leaf factory it holds.
+    fn supports(&self, kind: &str) -> bool {
+        self.kind() == kind
+    }
+
     fn open(
         &self,
         request: SourceOpen,

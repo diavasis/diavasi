@@ -15,7 +15,7 @@ connection + query + ordering contract + consumer group
 
 Progress is a logical checkpoint, not a live database cursor. Delivery is at-least-once: on ambiguity, Diavasi replays rather than skips. Control plane (HTTP + CLI) and data plane stay separate.
 
-Early development: Stages 0–7 are in place (transport bake-off, core domain, durable store, group supervision, control plane, TLS gRPC data plane, PostgreSQL keyset adapter, end-to-end benchmark and resource model). MongoDB, Redis, and ScyllaDB adapters are still ahead.
+Early development: Stages 0–9 are in place (transport bake-off, core domain, durable store, group supervision, control plane, TLS gRPC data plane, PostgreSQL keyset adapter, end-to-end benchmark and resource model, MongoDB find adapter, Redis Streams adapter). The ScyllaDB adapter is still ahead.
 
 ## Roadmap
 
@@ -30,10 +30,13 @@ Early development: Stages 0–7 are in place (transport bake-off, core domain, d
 | v0.5.0/Demo | Livebook: server, synthetic group, Python and Elixir clients ([notebook](clients/elixir/notebooks/demo.livemd)) | Next |
 | v0.6.0 | PostgreSQL adapter. After it lands, Docker Compose replaces the synthetic source | Done |
 | v0.7.0  | End-to-end Postgres benchmarks / resource model | Done |
-| v0.8.0–v0.10.0 | MongoDB, Redis, ScyllaDB adapters | Planned |
+| v0.8.0 | MongoDB adapter. Object `_id` or a declared sort; resume is a `find` keyset | Done |
+| v0.9.0 | Redis adapter. Stream id order; resume is `XGROUP SETID` plus `XREADGROUP` | Done |
+| v0.10.0 | ScyllaDB adapter | Planned |
 | v0.11.0  | Thin SDKs (Elixir, Rust, Python, Go) | Planned |
 | v0.12.0  | Metrics, soak, operator diagnostics. First a ratatui client of the HTTP API, then a Tauri 2 app on the same API | Planned |
-| v0.13.0  | Reconciliation research (ADR only) | Planned |
+| v0.13.0  | S3 adapter. Object key is the order; resume is `ListObjects` `StartAfter` | Planned |
+| v0.14.0  | Reconciliation research (ADR only) | Planned |
 
 Stage tutorials and reviews live under [`docs/`](docs/). Architecture: [`docs/architecture.md`](docs/architecture.md).
 
@@ -77,7 +80,7 @@ diavasi connection add \
   --config-json '{"host":"localhost"}' \
   --secret 'never-echoed-again'
 
-diavasi group create --group-id demo --total-records 100 --connection-id demo-pg
+diavasi group create --group-id demo --total-records 100
 diavasi group start demo
 diavasi status
 diavasi checkpoint show demo
@@ -86,6 +89,8 @@ diavasi group pause demo
 diavasi group delete demo
 diavasi connection delete demo-pg
 ```
+
+The group has no connection, so it reads the synthetic source. The connection commands above only exercise the control plane.
 
 `GET /health` needs no token. All `/v1` routes require `Authorization: Bearer <token>` (or `--token` / `DIAVASI_API_TOKEN` on the CLI).
 
@@ -112,7 +117,17 @@ Postgres is published on host port 5433 so it does not collide with a local serv
 ./scripts/check.sh
 ```
 
-The script runs `cargo fmt`, `cargo clippy`, `cargo test`, `cargo deny`, and `cargo llvm-cov`. It keeps `DATABASE_URL` when that is already set, and otherwise uses the Compose URL above so the PostgreSQL adapter tests run. Without a reachable database those tests skip and the adapter is reported as uncovered. Line coverage must stay at or above 85%. The transport harness and the end-to-end bench are excluded from that number.
+The script runs `cargo fmt`, `cargo clippy`, `cargo test`, `cargo deny`, and `cargo llvm-cov`. It keeps `DATABASE_URL`, `MONGODB_URL`, and `REDIS_URL` when those are already set, and otherwise uses the Compose URLs above so the PostgreSQL, MongoDB, and Redis adapter tests run. Without a reachable database those tests skip and the adapter is reported as uncovered. Line coverage must stay at or above 85%. The transport harness and the end-to-end bench are excluded from that number.
+
+Check one adapter end to end. The command inserts the rows, starts a temporary server, consumes them, and prints seed time plus consume throughput. Compose does not preload data, so `-n` and `-b` choose the size each run. The object name is `diavasi_test` (a table, collection, or stream). It is dropped when the command finishes. `--keep` leaves it in place.
+
+```bash
+diavasi test postgres -n 10000 -b 1024
+diavasi test mongo -n 10000 -b 1024
+diavasi test redis -n 10000 -b 1024
+```
+
+`--output json` prints one JSON object instead of the text lines. Postgres uses `DATABASE_URL` or `postgres://diavasi:diavasi@127.0.0.1:5433/diavasi`. MongoDB uses `MONGODB_URL`, Redis uses `REDIS_URL`.
 
 ## Workspace
 
@@ -121,8 +136,8 @@ The script runs `cargo fmt`, `cargo clippy`, `cargo test`, `cargo deny`, and `ca
 | `diavasi` | Server library (core, store, runtime, control plane) |
 | `diavasi-cli` | Admin CLI (`diavasi`) |
 | `diavasi-adapter-postgres` | PostgreSQL keyset source |
-| `diavasi-adapter-mongodb` | MongoDB source (planned) |
-| `diavasi-adapter-redis` | Redis source (planned) |
+| `diavasi-adapter-mongodb` | MongoDB find keyset source |
+| `diavasi-adapter-redis` | Redis Streams source |
 | `diavasi-adapter-scylla` | ScyllaDB source (planned) |
 
 ## License

@@ -42,7 +42,7 @@ cargo test --all --all-features
 cargo deny check
 ```
 
-CI sets `DATABASE_URL` so the Postgres tests run. A local `cargo test` without that variable still passes; those tests return immediately.
+The `integration` CI job sets `DATABASE_URL` so the Postgres tests run. A local `cargo test` without that variable still passes; those tests return immediately.
 
 ## Stop
 

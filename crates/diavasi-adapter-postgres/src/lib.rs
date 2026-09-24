@@ -19,6 +19,10 @@ pub const NAME: &str = "postgres";
 pub struct PostgresFactory;
 
 impl SourceFactory for PostgresFactory {
+    fn kind(&self) -> &str {
+        NAME
+    }
+
     fn open(
         &self,
         request: SourceOpen,
