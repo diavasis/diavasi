@@ -56,3 +56,4 @@ webpki-roots = "0.26"
 diavasi-adapter-postgres = { version = "0.1.0", path = "crates/diavasi-adapter-postgres" }
 diavasi-adapter-mongodb = { version = "0.1.0", path = "crates/diavasi-adapter-mongodb" }
 diavasi-adapter-redis = { version = "0.1.0", path = "crates/diavasi-adapter-redis" }
+diavasi-adapter-scylla = { version = "0.1.0", path = "crates/diavasi-adapter-scylla" }

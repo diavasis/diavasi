@@ -42,6 +42,7 @@ enum AdapterName {
     #[value(alias = "mongo")]
     Mongodb,
     Redis,
+    Scylla,
 }
 
 #[derive(Subcommand, Debug)]
@@ -69,9 +70,9 @@ enum Commands {
     },
     /// Print library version.
     Version,
-    /// Seed Postgres, MongoDB, or Redis, then consume the rows and print throughput.
+    /// Seed Postgres, MongoDB, Redis, or ScyllaDB, then consume the rows and print throughput.
     Test {
-        /// `postgres`, `mongo` / `mongodb`, or `redis`.
+        /// `postgres`, `mongo` / `mongodb`, `redis`, or `scylla`.
         adapter: AdapterName,
         /// Records to insert.
         #[arg(short = 'n', long, default_value_t = 10_000)]
@@ -89,6 +90,8 @@ enum Commands {
         mongodb_url: String,
         #[arg(long, env = "REDIS_URL", default_value = "redis://127.0.0.1:6379")]
         redis_url: String,
+        #[arg(long, env = "SCYLLA_URL", default_value = "127.0.0.1:9042")]
+        scylla_url: String,
         /// Leave the seeded table, collection, or stream in place.
         #[arg(long)]
         keep: bool,
@@ -246,6 +249,7 @@ async fn run(cli: Cli) -> Result<(), ExitCode> {
             database_url,
             mongodb_url,
             redis_url,
+            scylla_url,
             keep,
         } => {
             if let Err(err) = adapter_test::run(adapter_test::AdapterTest {
@@ -253,12 +257,14 @@ async fn run(cli: Cli) -> Result<(), ExitCode> {
                     AdapterName::Postgres => adapter_test::AdapterKind::Postgres,
                     AdapterName::Mongodb => adapter_test::AdapterKind::Mongodb,
                     AdapterName::Redis => adapter_test::AdapterKind::Redis,
+                    AdapterName::Scylla => adapter_test::AdapterKind::Scylla,
                 },
                 records,
                 payload_bytes,
                 database_url,
                 mongodb_url,
                 redis_url,
+                scylla_url,
                 keep,
                 object: "diavasi_test".into(),
                 json: matches!(cli.output, OutputFormat::Json),

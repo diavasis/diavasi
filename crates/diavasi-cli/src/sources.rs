@@ -16,6 +16,7 @@ impl RoutingFactory {
                 Arc::new(diavasi_adapter_postgres::PostgresFactory),
                 Arc::new(diavasi_adapter_mongodb::MongoFactory),
                 Arc::new(diavasi_adapter_redis::RedisFactory),
+                Arc::new(diavasi_adapter_scylla::ScyllaFactory),
             ],
         }
     }
@@ -63,11 +64,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn routes_postgres_mongodb_and_redis() {
+    fn routes_postgres_mongodb_redis_and_scylla() {
         let factory = RoutingFactory::installed();
         assert!(factory.supports("postgres"));
         assert!(factory.supports("mongodb"));
         assert!(factory.supports("redis"));
-        assert!(!factory.supports("scylla"));
+        assert!(factory.supports("scylla"));
     }
 }

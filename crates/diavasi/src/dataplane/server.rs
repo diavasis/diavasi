@@ -34,6 +34,7 @@ pub struct DataPlaneConfig {
 pub async fn serve_dataplane(
     config: DataPlaneConfig,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let identity = Identity::from_pem(&config.tls_cert_pem, &config.tls_key_pem);
     let svc = DataSvc {
         auth_token: config.api_token,

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Format, lint, test, license check, and coverage.
-# Uses DATABASE_URL, MONGODB_URL, and REDIS_URL when set. Otherwise the
-# Compose Postgres on port 5433, MongoDB on port 27017, and Redis on port
-# 6379, so the adapter tests run and show up in coverage.
+# Uses DATABASE_URL, MONGODB_URL, REDIS_URL, and SCYLLA_URL when set.
+# Otherwise the Compose Postgres on port 5433, MongoDB on port 27017, Redis
+# on port 6379, and ScyllaDB on port 9042, so the adapter tests run and show
+# up in coverage.
 
 set -euo pipefail
 
@@ -18,6 +19,10 @@ fi
 
 if [[ -z "${REDIS_URL:-}" ]]; then
   export REDIS_URL="redis://127.0.0.1:6379"
+fi
+
+if [[ -z "${SCYLLA_URL:-}" ]]; then
+  export SCYLLA_URL="127.0.0.1:9042"
 fi
 
 # Library line coverage stays near 88% when the Postgres adapter tests run.

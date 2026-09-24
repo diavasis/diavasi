@@ -60,6 +60,7 @@ impl ConsumerClient {
     pub async fn run(
         opts: ConsumerOptions,
     ) -> Result<ConsumeReport, Box<dyn std::error::Error + Send + Sync>> {
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let tls = ClientTlsConfig::new()
             .ca_certificate(Certificate::from_pem(&opts.ca_pem))
             .domain_name("localhost");

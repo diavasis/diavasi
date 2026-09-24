@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 /// CA PEM, leaf certificate PEM, and leaf private key PEM.
 pub fn generate_self_signed() -> Result<(String, String, String), rcgen::Error> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let mut ca_params = rcgen::CertificateParams::new(vec!["Diavasi Data Plane CA".to_string()])?;
     ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
     ca_params
