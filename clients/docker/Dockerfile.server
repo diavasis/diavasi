@@ -1,0 +1,13 @@
+FROM rust:1.88-bookworm AS build
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY crates crates
+RUN cargo build -p diavasi-cli --release
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
+COPY --from=build /src/target/release/diavasi /usr/local/bin/diavasi
+COPY clients/docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+EXPOSE 7700 7710
+ENTRYPOINT ["/entrypoint.sh"]

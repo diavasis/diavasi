@@ -1,4 +1,16 @@
-# Diavasi Stage 0 Python client
+# Diavasi Python client
+
+`diavasi_data.consume` reads the TLS gRPC data plane. The Stage 0 TCP bench client is still in this tree and speaks a different protocol.
+
+```bash
+PYTHONPATH=clients/python python -m diavasi_data \
+  --addr 127.0.0.1:7710 --ca /tmp/diavasi-sdk/dataplane-ca.crt \
+  --token sdk-demo --group demo --consumer python --total 8
+```
+
+`python -m unittest test_consume.py` skips until `DIAVASI_DATA_ADDR`, `DIAVASI_CA`, and `DIAVASI_API_TOKEN` are set.
+
+## Stage 0 bench
 
 ## Setup (mise)
 

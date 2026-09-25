@@ -66,6 +66,10 @@ A group bound to a `redis` connection reads one stream with `XGROUP SETID` and `
 
 A group bound to a `scylla` connection reads one partition in clustering order, or walks the ring in token order when `scan` is `token`. Resume is the committed logical key, not a driver paging cookie. `diavasi serve` routes `postgres`, `mongodb`, `redis`, and `scylla`. See [ADR 0011](adr/0011-scylla-query-contract.md) and [docs/adapters/scylla.md](adapters/scylla.md).
 
+## Client SDKs (Stage 11)
+
+Elixir, Rust, Python, Go, JavaScript, Java, C#, and C are thin clients of `diavasi.data.v1`. They join, yield batches, and ack by `batch_id`. They do not store a cursor. See [ADR 0012](adr/0012-client-sdks.md) and [docs/tutorials/stage-11-sdks.md](tutorials/stage-11-sdks.md).
+
 ## Resource model (Stage 7)
 
 An idle running group is one owner task, a fetch ticker, a timeout ticker, and, for Postgres, one connection, with an empty buffer. An active group adds the configured buffer and the in-flight batches on each stream. Consumers per group, groups per process, and fetch-error restarts are unbounded on purpose. See [docs/resource-model.md](resource-model.md).
