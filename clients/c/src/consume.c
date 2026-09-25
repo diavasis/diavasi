@@ -4,6 +4,7 @@
 #include <grpc/grpc.h>
 #include <grpc/grpc_security.h>
 #include <grpc/slice.h>
+#include <grpc/status.h>
 #include <grpc/byte_buffer.h>
 #include <grpc/byte_buffer_reader.h>
 #include <grpc/support/alloc.h>
@@ -30,6 +31,41 @@ static int complete(grpc_completion_queue *cq, void *tag, grpc_byte_buffer **rec
     }
     (void)received;
     return 0;
+}
+
+static int call_status(grpc_call *call, grpc_completion_queue *cq, grpc_status_code *status, char *detail, size_t detail_len) {
+    grpc_metadata_array trailing;
+    grpc_metadata_array_init(&trailing);
+    grpc_slice details = grpc_empty_slice();
+    grpc_op op;
+    memset(&op, 0, sizeof op);
+    op.op = GRPC_OP_RECV_STATUS_ON_CLIENT;
+    op.data.recv_status_on_client.trailing_metadata = &trailing;
+    op.data.recv_status_on_client.status = status;
+    op.data.recv_status_on_client.status_details = &details;
+    int rc = 0;
+    if (grpc_call_start_batch(call, &op, 1, (void *)2, NULL) != GRPC_CALL_OK || complete(cq, (void *)2, NULL) != 0) {
+        rc = -1;
+    }
+    if (detail != NULL && detail_len > 0) {
+        size_t n = GRPC_SLICE_LENGTH(details);
+        if (n >= detail_len) {
+            n = detail_len - 1;
+        }
+        memcpy(detail, GRPC_SLICE_START_PTR(details), n);
+        detail[n] = 0;
+    }
+    grpc_slice_unref(details);
+    grpc_metadata_array_destroy(&trailing);
+    return rc;
+}
+
+static void set_call_error(char *buf, size_t cap, grpc_status_code status, const char *detail) {
+    if (status == GRPC_STATUS_UNAUTHENTICATED || detail == NULL || strstr(detail, "unauthorized") != NULL) {
+        set_error(buf, cap, "grpc UNAUTHENTICATED: unauthorized");
+        return;
+    }
+    snprintf(buf, cap, "grpc status %d: %s", (int)status, detail);
 }
 
 static grpc_byte_buffer *frame_buffer(const uint8_t *bytes, size_t len) {
@@ -174,7 +210,12 @@ int diavasi_consume(const diavasi_options *options, diavasi_report *report, char
             recv_buf = NULL;
         }
         if (bytes == NULL) {
-            if (options->expect_records > 0 && report->record_count < options->expect_records) {
+            grpc_status_code status = GRPC_STATUS_OK;
+            char detail[128] = {0};
+            if (call_status(call, cq, &status, detail, sizeof detail) == 0 && status != GRPC_STATUS_OK) {
+                set_call_error(error_buf, error_buf_len, status, detail);
+                rc = -1;
+            } else if (options->expect_records > 0 && report->record_count < options->expect_records) {
                 set_error(error_buf, error_buf_len, "stream ended early");
                 rc = -1;
             }
