@@ -1,4 +1,5 @@
 using Diavasi.Data;
+using Xunit;
 
 public class ConsumeTests
 {
