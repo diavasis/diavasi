@@ -71,13 +71,39 @@ public static class DiavasiClient
         var sentFlow = false;
         var seen = 0;
         var ackedBatches = 0;
-        var finishedEarly = false;
         var maxInFlight = options.MaxInFlight == 0 ? 1u : options.MaxInFlight;
-        try
+        while (true)
         {
-            while (await call.ResponseStream.MoveNext(cancellation))
+            bool moved;
+            var streamClosed = false;
+            try
             {
-                var env = call.ResponseStream.Current;
+                moved = await call.ResponseStream.MoveNext(cancellation);
+            }
+            catch (RpcException) when (ExpectMet())
+            {
+                streamClosed = true;
+                moved = false;
+            }
+            catch (RpcException exc)
+            {
+                throw new CallException(exc.StatusCode.ToString(), exc.Status.Detail);
+            }
+
+            if (streamClosed)
+            {
+                yield break;
+            }
+
+            if (!moved)
+            {
+                break;
+            }
+
+            var env = call.ResponseStream.Current;
+            RecordBatch? pending = null;
+            try
+            {
                 switch (env.BodyCase)
                 {
                     case Envelope.BodyOneofCase.HelloAck:
@@ -103,37 +129,7 @@ public static class DiavasiClient
                         }
                         break;
                     case Envelope.BodyOneofCase.RecordBatch:
-                        var batch = env.RecordBatch;
-                        yield return batch;
-                        await call.RequestStream.WriteAsync(new Envelope
-                        {
-                            Version = 1,
-                            Ack = new Ack { BatchId = batch.BatchId },
-                        }, cancellation);
-                        ackedBatches++;
-                        seen += batch.Records.Count;
-                        if (options.HaltAfterAcks > 0 && (uint)ackedBatches >= options.HaltAfterAcks)
-                        {
-                            try
-                            {
-                                using var extra = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-                                await call.ResponseStream.MoveNext(extra.Token);
-                            }
-                            catch (OperationCanceledException)
-                            {
-                            }
-                            yield break;
-                        }
-                        if (options.ExpectRecords > 0 && (ulong)seen >= options.ExpectRecords)
-                        {
-                            await call.RequestStream.WriteAsync(new Envelope
-                            {
-                                Version = 1,
-                                Leave = new Leave(),
-                            }, cancellation);
-                            await call.RequestStream.CompleteAsync();
-                            yield break;
-                        }
+                        pending = env.RecordBatch;
                         break;
                     case Envelope.BodyOneofCase.Heartbeat:
                         await call.RequestStream.WriteAsync(new Envelope
@@ -148,25 +144,95 @@ public static class DiavasiClient
                         break;
                 }
             }
-        }
-        catch (RpcException) when (options.ExpectRecords > 0 && (ulong)seen >= options.ExpectRecords)
-        {
-            finishedEarly = true;
-        }
-        catch (RpcException exc)
-        {
-            throw new CallException(exc.StatusCode.ToString(), exc.Status.Detail);
-        }
+            catch (RpcException) when (ExpectMet())
+            {
+                streamClosed = true;
+            }
+            catch (RpcException exc)
+            {
+                throw new CallException(exc.StatusCode.ToString(), exc.Status.Detail);
+            }
 
-        if (finishedEarly)
-        {
-            yield break;
+            if (streamClosed)
+            {
+                yield break;
+            }
+
+            if (pending is null)
+            {
+                continue;
+            }
+
+            yield return pending;
+
+            var halt = false;
+            var leave = false;
+            try
+            {
+                await call.RequestStream.WriteAsync(new Envelope
+                {
+                    Version = 1,
+                    Ack = new Ack { BatchId = pending.BatchId },
+                }, cancellation);
+                ackedBatches++;
+                seen += pending.Records.Count;
+                if (options.HaltAfterAcks > 0 && (uint)ackedBatches >= options.HaltAfterAcks)
+                {
+                    halt = true;
+                }
+                else if (options.ExpectRecords > 0 && (ulong)seen >= options.ExpectRecords)
+                {
+                    await call.RequestStream.WriteAsync(new Envelope
+                    {
+                        Version = 1,
+                        Leave = new Leave(),
+                    }, cancellation);
+                    await call.RequestStream.CompleteAsync();
+                    leave = true;
+                }
+            }
+            catch (RpcException) when (ExpectMet())
+            {
+                streamClosed = true;
+            }
+            catch (RpcException exc)
+            {
+                throw new CallException(exc.StatusCode.ToString(), exc.Status.Detail);
+            }
+
+            if (halt)
+            {
+                try
+                {
+                    using var extra = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                    await call.ResponseStream.MoveNext(extra.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                }
+                catch (RpcException) when (ExpectMet())
+                {
+                }
+                catch (RpcException exc)
+                {
+                    throw new CallException(exc.StatusCode.ToString(), exc.Status.Detail);
+                }
+
+                yield break;
+            }
+
+            if (leave || streamClosed)
+            {
+                yield break;
+            }
         }
 
         if (options.ExpectRecords > 0 && (ulong)seen < options.ExpectRecords)
         {
             throw new CallException("Unavailable", "stream ended early");
         }
+
+        bool ExpectMet() => options.ExpectRecords > 0 && (ulong)seen >= options.ExpectRecords;
     }
 
     public static async Task<Report> ConsumeAsync(Options options, CancellationToken cancellation = default)
