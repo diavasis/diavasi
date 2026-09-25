@@ -1,0 +1,7 @@
+.git
+target
+clients/rust/target
+clients/js/node_modules
+clients/python/.venv
+clients/java/.gradle
+clients/java/build

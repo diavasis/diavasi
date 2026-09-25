@@ -1,15 +1,12 @@
-"""Compatibility client for the Stage 5 TLS gRPC data plane."""
+"""Example: consume a group and print batch ids."""
 
 from __future__ import annotations
 
 import argparse
 import queue
 import sys
-import threading
 
-import grpc
-
-from diavasi_data import data_pb2, data_pb2_grpc
+from diavasi_data.client import CallError, ProtocolError, Session
 
 
 def main() -> int:
@@ -20,85 +17,58 @@ def main() -> int:
     parser.add_argument("--group", required=True)
     parser.add_argument("--consumer", default="python")
     parser.add_argument("--total", type=int, required=True)
-    parser.add_argument("--max-in-flight", type=int, default=4)
-    parser.add_argument("--print-ids", action="store_true")
+    parser.add_argument("--max-in-flight", type=int, default=1)
+    parser.add_argument("--halt-after", type=int, default=0)
     args = parser.parse_args()
 
-    with open(args.ca, "rb") as handle:
-        creds = grpc.ssl_channel_credentials(root_certificates=handle.read())
-    channel = grpc.secure_channel(
-        args.addr,
-        creds,
-        options=(("grpc.ssl_target_name_override", "localhost"),),
+    session = Session(
+        addr=args.addr,
+        ca=args.ca,
+        token=args.token,
+        group_id=args.group,
+        consumer_id=args.consumer,
+        max_in_flight=args.max_in_flight,
     )
-    stub = data_pb2_grpc.DataPlaneStub(channel)
-    outbound: queue.Queue[data_pb2.Envelope | None] = queue.Queue()
-
-    def requests():
-        while True:
-            item = outbound.get()
-            if item is None:
-                return
-            yield item
-
-    hello = data_pb2.Envelope(version=1)
-    hello.hello.protocol_version = 1
-    outbound.put(hello)
-
-    seen: set[int] = set()
-    acked = 0
-    sent_flow = False
-    metadata = (("authorization", f"Bearer {args.token}"),)
+    record_ids: list[int] = []
+    batch_ids: list[int] = []
     try:
-        for env in stub.Consume(requests(), metadata=metadata, timeout=30):
-            which = env.WhichOneof("body")
-            if which == "hello_ack":
-                join = data_pb2.Envelope(version=1)
-                join.join_group.group_id = args.group
-                join.join_group.consumer_id = args.consumer
-                outbound.put(join)
-            elif which == "joined":
-                if not sent_flow:
-                    flow = data_pb2.Envelope(version=1)
-                    flow.flow_control.max_in_flight = args.max_in_flight
-                    outbound.put(flow)
-                    sent_flow = True
-            elif which == "record_batch":
-                for record in env.record_batch.records:
-                    seen.add(record.record_id)
-                ack = data_pb2.Envelope(version=1)
-                ack.ack.batch_id = env.record_batch.batch_id
-                outbound.put(ack)
-                acked += 1
-                if len(seen) >= args.total:
-                    leave = data_pb2.Envelope(version=1)
-                    leave.leave.SetInParent()
-                    outbound.put(leave)
-                    outbound.put(None)
-                    break
-            elif which == "heartbeat":
-                continue
-            elif which == "error":
-                sys.stderr.write(
-                    f"protocol error {env.error.code}: {env.error.message}\n"
-                )
-                return 1
-            else:
-                sys.stderr.write(f"unexpected frame {which}\n")
-                return 1
-    finally:
-        outbound.put(None)
-        channel.close()
-
-    if len(seen) != args.total or acked == 0:
-        sys.stderr.write(f"incomplete consume seen={len(seen)} acked={acked}\n")
+        session.connect()
+        while len(record_ids) < args.total:
+            batch = session.next_batch()
+            if batch is None:
+                break
+            record_ids.extend(record.record_id for record in batch.records)
+            session.ack(batch.batch_id)
+            batch_ids.append(batch.batch_id)
+            if args.halt_after and len(batch_ids) >= args.halt_after:
+                try:
+                    session.next_batch(timeout=5)
+                except queue.Empty:
+                    pass
+                break
+        else:
+            session.leave()
+        if args.halt_after and len(batch_ids) >= args.halt_after:
+            pass
+        elif len(record_ids) < args.total:
+            sys.stderr.write(
+                f"incomplete consume records={len(record_ids)} batches={len(batch_ids)}\n"
+            )
+            return 1
+    except ProtocolError as exc:
+        sys.stderr.write(f"{exc}\n")
+        return exc.code if 1 <= exc.code <= 8 else 1
+    except CallError as exc:
+        sys.stderr.write(f"{exc}\n")
         return 1
-    if args.print_ids:
-        print("ids " + " ".join(str(record_id) for record_id in sorted(seen)))
-    print(f"python consumed {len(seen)} records in {acked} batches")
+    finally:
+        session.close()
+
+    print("record_ids " + " ".join(str(record_id) for record_id in record_ids))
+    print("batch_ids " + " ".join(str(batch_id) for batch_id in batch_ids))
+    print(f"python consumed {len(record_ids)} records in {len(batch_ids)} batches")
     return 0
 
 
 if __name__ == "__main__":
-    threading.current_thread().name = "diavasi-data"
     sys.exit(main())

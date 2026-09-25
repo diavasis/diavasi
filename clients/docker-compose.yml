@@ -1,0 +1,147 @@
+name: diavasi-clients
+
+services:
+  diavasi:
+    build:
+      context: ..
+      dockerfile: clients/docker/Dockerfile.server
+    environment:
+      DIAVASI_API_TOKEN: demo-token
+    volumes:
+      - ca:/var/lib/diavasi
+    healthcheck:
+      test: ["CMD", "test", "-f", "/var/lib/diavasi/ready"]
+      interval: 1s
+      timeout: 2s
+      retries: 40
+      start_period: 5s
+
+  python:
+    profiles: ["python", "all"]
+    build:
+      context: ..
+      dockerfile: clients/python/Dockerfile
+    depends_on:
+      diavasi:
+        condition: service_healthy
+    environment: &demo
+      DIAVASI_DATA_ADDR: diavasi:7710
+      DIAVASI_API_TOKEN: demo-token
+      DIAVASI_CA: /ca/dataplane-ca.crt
+    volumes:
+      - ca:/ca:ro
+
+  elixir:
+    profiles: ["elixir", "all"]
+    build:
+      context: ..
+      dockerfile: clients/elixir/Dockerfile
+    depends_on:
+      diavasi:
+        condition: service_healthy
+    environment: *demo
+    volumes:
+      - ca:/ca:ro
+
+  rust:
+    profiles: ["rust", "all"]
+    build:
+      context: ..
+      dockerfile: clients/rust/Dockerfile
+    depends_on:
+      diavasi:
+        condition: service_healthy
+    environment: *demo
+    volumes:
+      - ca:/ca:ro
+
+  go:
+    profiles: ["go", "all"]
+    build:
+      context: ..
+      dockerfile: clients/go/Dockerfile
+    depends_on:
+      diavasi:
+        condition: service_healthy
+    environment: *demo
+    volumes:
+      - ca:/ca:ro
+
+  js:
+    profiles: ["js", "all"]
+    build:
+      context: ..
+      dockerfile: clients/js/Dockerfile
+    depends_on:
+      diavasi:
+        condition: service_healthy
+    environment: *demo
+    volumes:
+      - ca:/ca:ro
+
+  java:
+    profiles: ["java", "all"]
+    build:
+      context: ..
+      dockerfile: clients/java/Dockerfile
+    depends_on:
+      diavasi:
+        condition: service_healthy
+    environment: *demo
+    volumes:
+      - ca:/ca:ro
+
+  csharp:
+    profiles: ["csharp", "all"]
+    build:
+      context: ..
+      dockerfile: clients/csharp/Dockerfile
+    depends_on:
+      diavasi:
+        condition: service_healthy
+    environment: *demo
+    volumes:
+      - ca:/ca:ro
+
+  c:
+    profiles: ["c", "all"]
+    build:
+      context: ..
+      dockerfile: clients/c/Dockerfile
+    depends_on:
+      diavasi:
+        condition: service_healthy
+    environment: *demo
+    volumes:
+      - ca:/ca:ro
+
+  notebook:
+    profiles: ["notebook"]
+    build:
+      context: ..
+      dockerfile: clients/notebook/Dockerfile
+    depends_on:
+      diavasi:
+        condition: service_healthy
+    ports:
+      - "8888:8888"
+    environment:
+      <<: *demo
+    volumes:
+      - ca:/ca:ro
+      - ..:/opt/diavasi:ro
+    command: ["jupyter", "lab", "--ip=0.0.0.0", "--port=8888", "--no-browser", "--allow-root", "--ServerApp.token=", "--ServerApp.password=", "--notebook-dir=/work"]
+
+  livebook:
+    profiles: ["livebook", "notebook"]
+    image: ghcr.io/livebook-dev/livebook:0.15.5
+    ports:
+      - "8080:8080"
+    environment:
+      LIVEBOOK_TOKEN_ENABLED: "false"
+      LIVEBOOK_IP: "0.0.0.0"
+    volumes:
+      - ./elixir/notebooks:/data
+
+volumes:
+  ca:

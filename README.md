@@ -15,7 +15,7 @@ connection + query + ordering contract + consumer group
 
 Progress is a logical checkpoint, not a live database cursor. Delivery is at-least-once: on ambiguity, Diavasi replays rather than skips. Control plane (HTTP + CLI) and data plane stay separate.
 
-Early development: Stages 0–10 are in place (transport bake-off, core domain, durable store, group supervision, control plane, TLS gRPC data plane, PostgreSQL keyset adapter, end-to-end benchmark and resource model, MongoDB find adapter, Redis Streams adapter, ScyllaDB adapter). The S3 adapter is still ahead.
+Early development: Stages 0–11 are in place (transport bake-off, core domain, durable store, group supervision, control plane, TLS gRPC data plane, PostgreSQL keyset adapter, end-to-end benchmark and resource model, MongoDB find adapter, Redis Streams adapter, ScyllaDB adapter, client SDKs). The S3 adapter is still ahead.
 
 ## Roadmap
 
@@ -33,7 +33,7 @@ Early development: Stages 0–10 are in place (transport bake-off, core domain, 
 | v0.8.0 | MongoDB adapter. Object `_id` or a declared sort; resume is a `find` keyset | Done |
 | v0.9.0 | Redis adapter. Stream id order; resume is `XGROUP SETID` plus `XREADGROUP` | Done |
 | v0.10.0 | ScyllaDB adapter. One partition in clustering order, or an explicit token scan. Resume is the logical key | Done |
-| v0.11.0  | Thin SDKs (Elixir, Rust, Python, Go) | Planned |
+| v0.11.0  | Thin SDKs (Elixir, Rust, Python, Go, JavaScript, Java, C#, C) | Done |
 | v0.12.0  | Metrics, soak, operator diagnostics. First a ratatui client of the HTTP API, then a Tauri 2 app on the same API | Planned |
 | v0.13.0  | S3 adapter. Object key is the order; resume is `ListObjects` `StartAfter` | Planned |
 | v0.14.0  | Reconciliation research (ADR only) | Planned |
@@ -99,6 +99,7 @@ Use `--output json` for machine-readable responses.
 ### Learn more
 
 - Stage 4 walkthrough: [docs/tutorials/stage-04-control-plane.md](docs/tutorials/stage-04-control-plane.md)
+- Client SDKs: [docs/tutorials/stage-11-sdks.md](docs/tutorials/stage-11-sdks.md)
 - Control-plane ADR: [docs/adr/0005-control-plane.md](docs/adr/0005-control-plane.md)
 - Transport bake-off: [docs/transport-benchmark.md](docs/transport-benchmark.md)
 - Postgres end-to-end benchmark: [docs/bench/stage-07.md](docs/bench/stage-07.md)
@@ -138,6 +139,12 @@ diavasi test scylla -n 10000 -b 1024
 ```
 
 `--output json` prints one JSON object instead of the text lines. Postgres uses `DATABASE_URL` or `postgres://diavasi:diavasi@127.0.0.1:5433/diavasi`. MongoDB uses `MONGODB_URL`, Redis uses `REDIS_URL`, and ScyllaDB uses `SCYLLA_URL` or `127.0.0.1:9042`. The ScyllaDB seed is one partition, `bucket = 0`, clustering column `id`, payload column `body`.
+
+Client SDKs live under [`clients/`](clients/README.md). `clients/scripts/compat.sh` starts a synthetic group and runs each SDK. A per-language Compose profile demos the same call:
+
+```bash
+docker compose -f clients/docker-compose.yml --profile python up --abort-on-container-exit
+```
 
 ## Workspace
 
