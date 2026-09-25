@@ -1,8 +1,24 @@
 package dev.diavasi.data;
 
+/**
+ * Command-line consumer for {@code diavasi.data.v1}.
+ *
+ * <p>Joins one group, acks every batch, and prints {@code record_ids} and
+ * {@code batch_ids}. A protocol error exits with that code. Any other failure
+ * exits 1. An unknown flag exits 2. The last occurrence of a repeated flag wins.
+ *
+ * <p>Flags: {@code --addr}, {@code --ca}, {@code --token}, {@code --group},
+ * {@code --consumer} (default {@code java}), {@code --total},
+ * {@code --max-in-flight} (default 1), {@code --halt-after}.
+ */
 public final class Consume {
     private Consume() {}
 
+    /**
+     * Parses flags, consumes the group, and prints the report.
+     *
+     * @param args flag and value pairs, for example {@code --addr 127.0.0.1:7710}
+     */
     public static void main(String[] args) {
         DiavasiClient.Options options = new DiavasiClient.Options();
         options.consumerId = "java";

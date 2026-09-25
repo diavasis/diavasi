@@ -22,6 +22,7 @@ Each language has its own page: the library call, the example, the errors, and t
 - [Java](../../clients/java/README.md)
 - [C#](../../clients/csharp/README.md)
 - [C](../../clients/c/README.md)
+- [Zig](../../clients/zig/README.md), calling the C library
 
 The index, including Compose profiles and the notebook image, is [clients/README.md](../../clients/README.md).
 

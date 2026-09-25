@@ -15,17 +15,29 @@ export PYTHONPATH=clients/python
 ## Library
 
 ```python
-from diavasi_data import consume
+from diavasi_data import CallError, ProtocolError, consume
 
-for batch in consume(
-    addr="127.0.0.1:7710",
-    ca="/tmp/diavasi-sdk/dataplane-ca.crt",
-    token="sdk-demo",
-    group_id="demo",
-    consumer_id="python",
-    expect_records=8,
-):
-    print(batch.batch_id, [record.record_id for record in batch.records])
+try:
+    for batch in consume(
+        addr="127.0.0.1:7710",
+        ca="/tmp/diavasi-sdk/dataplane-ca.crt",
+        token="sdk-demo",
+        group_id="demo",
+        consumer_id="python",
+        expect_records=8,
+    ):
+        for record in batch.records:
+            print(f"batch {batch.batch_id} record {record.record_id} ({len(record.payload)} bytes)")
+except ProtocolError as err:
+    print(f"protocol {err.code}: {err.message}")
+except CallError as err:
+    print(f"grpc {err.status}: {err.message}")
+```
+
+The same program is `clients/python/examples/process.py`. From the repo root, after the server and the `demo` group are up:
+
+```bash
+PYTHONPATH=clients/python clients/python/.venv/bin/python clients/python/examples/process.py
 ```
 
 `consume()` acks in a `finally` around the yield, so breaking out of the loop still acks the current batch. `expect_records` sends Leave once that many records are acked. `halt_after_acks` closes after that many acks and does not send Leave. `Session` is the same stream when the caller wants to call `ack` itself.

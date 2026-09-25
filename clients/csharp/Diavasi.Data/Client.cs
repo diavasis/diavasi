@@ -1,4 +1,5 @@
 using System.Net.Security;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography.X509Certificates;
 using Diavasi.Data.V1;
 using Grpc.Core;
@@ -46,7 +47,13 @@ public sealed class Options
 
 public static class DiavasiClient
 {
-    public static async Task<Report> ConsumeAsync(Options options, CancellationToken cancellation = default)
+    /// <summary>
+    /// Join the group and yield each batch. The ack is sent when the caller
+    /// asks for the next batch, after the loop body has processed this one.
+    /// </summary>
+    public static async IAsyncEnumerable<RecordBatch> BatchesAsync(
+        Options options,
+        [EnumeratorCancellation] CancellationToken cancellation = default)
     {
         using var channel = GrpcChannel.ForAddress("https://" + options.Addr, new GrpcChannelOptions
         {
@@ -61,8 +68,10 @@ public static class DiavasiClient
             Hello = new Hello { ProtocolVersion = 1 },
         }, cancellation);
 
-        var report = new Report();
         var sentFlow = false;
+        var seen = 0;
+        var ackedBatches = 0;
+        var finishedEarly = false;
         var maxInFlight = options.MaxInFlight == 0 ? 1u : options.MaxInFlight;
         try
         {
@@ -95,17 +104,15 @@ public static class DiavasiClient
                         break;
                     case Envelope.BodyOneofCase.RecordBatch:
                         var batch = env.RecordBatch;
-                        foreach (var record in batch.Records)
-                        {
-                            report.RecordIds.Add(record.RecordId);
-                        }
+                        yield return batch;
                         await call.RequestStream.WriteAsync(new Envelope
                         {
                             Version = 1,
                             Ack = new Ack { BatchId = batch.BatchId },
                         }, cancellation);
-                        report.BatchIds.Add(batch.BatchId);
-                        if (options.HaltAfterAcks > 0 && report.BatchIds.Count >= options.HaltAfterAcks)
+                        ackedBatches++;
+                        seen += batch.Records.Count;
+                        if (options.HaltAfterAcks > 0 && (uint)ackedBatches >= options.HaltAfterAcks)
                         {
                             try
                             {
@@ -115,9 +122,9 @@ public static class DiavasiClient
                             catch (OperationCanceledException)
                             {
                             }
-                            return report;
+                            yield break;
                         }
-                        if (options.ExpectRecords > 0 && (ulong)report.RecordIds.Count >= options.ExpectRecords)
+                        if (options.ExpectRecords > 0 && (ulong)seen >= options.ExpectRecords)
                         {
                             await call.RequestStream.WriteAsync(new Envelope
                             {
@@ -125,7 +132,7 @@ public static class DiavasiClient
                                 Leave = new Leave(),
                             }, cancellation);
                             await call.RequestStream.CompleteAsync();
-                            return report;
+                            yield break;
                         }
                         break;
                     case Envelope.BodyOneofCase.Heartbeat:
@@ -142,18 +149,36 @@ public static class DiavasiClient
                 }
             }
         }
-        catch (RpcException) when (options.ExpectRecords > 0 && (ulong)report.RecordIds.Count >= options.ExpectRecords)
+        catch (RpcException) when (options.ExpectRecords > 0 && (ulong)seen >= options.ExpectRecords)
         {
-            return report;
+            finishedEarly = true;
         }
         catch (RpcException exc)
         {
             throw new CallException(exc.StatusCode.ToString(), exc.Status.Detail);
         }
 
-        if (options.ExpectRecords > 0 && (ulong)report.RecordIds.Count < options.ExpectRecords)
+        if (finishedEarly)
+        {
+            yield break;
+        }
+
+        if (options.ExpectRecords > 0 && (ulong)seen < options.ExpectRecords)
         {
             throw new CallException("Unavailable", "stream ended early");
+        }
+    }
+
+    public static async Task<Report> ConsumeAsync(Options options, CancellationToken cancellation = default)
+    {
+        var report = new Report();
+        await foreach (var batch in BatchesAsync(options, cancellation))
+        {
+            foreach (var record in batch.Records)
+            {
+                report.RecordIds.Add(record.RecordId);
+            }
+            report.BatchIds.Add(batch.BatchId);
         }
         return report;
     }

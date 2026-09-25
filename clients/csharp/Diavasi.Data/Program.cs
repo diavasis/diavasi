@@ -6,7 +6,9 @@ var total = ulong.TryParse(Get(parsed, "--total"), out var parsedTotal) ? parsed
 var max = uint.TryParse(Get(parsed, "--max-in-flight"), out var parsedMax) ? parsedMax : 1u;
 try
 {
-    var report = await DiavasiClient.ConsumeAsync(new Options
+    var recordIds = new List<ulong>();
+    var batchIds = new List<ulong>();
+    await foreach (var batch in DiavasiClient.BatchesAsync(new Options
     {
         Addr = Get(parsed, "--addr") ?? "",
         Ca = Get(parsed, "--ca") ?? "",
@@ -16,10 +18,18 @@ try
         MaxInFlight = max,
         HaltAfterAcks = halt,
         ExpectRecords = total,
-    });
-    Console.WriteLine("record_ids " + string.Join(' ', report.RecordIds));
-    Console.WriteLine("batch_ids " + string.Join(' ', report.BatchIds));
-    Console.WriteLine($"csharp consumed {report.RecordIds.Count} records in {report.BatchIds.Count} batches");
+    }))
+    {
+        foreach (var record in batch.Records)
+        {
+            Console.WriteLine($"batch {batch.BatchId} record {record.RecordId} ({record.Payload.Length} bytes)");
+            recordIds.Add(record.RecordId);
+        }
+        batchIds.Add(batch.BatchId);
+    }
+    Console.WriteLine("record_ids " + string.Join(' ', recordIds));
+    Console.WriteLine("batch_ids " + string.Join(' ', batchIds));
+    Console.WriteLine($"csharp consumed {recordIds.Count} records in {batchIds.Count} batches");
 }
 catch (ProtocolException exc)
 {

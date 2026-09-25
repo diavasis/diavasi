@@ -130,8 +130,7 @@ Postgres uses `DATABASE_URL` or `postgres://diavasi:diavasi@127.0.0.1:5433/diava
 
 A consumer opens `DataPlane.Consume`, sends `Hello` version 1, joins a group, and yields batches. The caller acks by `batch_id`. The client stores no cursor and does not dedupe on `record_id`, because that field is 0 for Redis and for some Scylla keys. Dropping the stream is how unacked batches return. Reconnect with the same consumer id and the server replays them.
 
-Python is the getting-started client. The call, the errors, and the test are in [clients/python/README.md](clients/python/README.md). The other languages:
-
+- [Python](clients/python/README.md)
 - [Elixir](clients/elixir/README.md)
 - [Rust](clients/rust/README.md)
 - [Go](clients/go/README.md)
@@ -139,6 +138,7 @@ Python is the getting-started client. The call, the errors, and the test are in 
 - [Java](clients/java/README.md)
 - [C#](clients/csharp/README.md)
 - [C](clients/c/README.md)
+- [Zig](clients/zig/README.md), which calls the C library
 
 ### FAQ
 
@@ -199,6 +199,12 @@ docker compose up -d
 The script runs `cargo fmt`, `cargo clippy`, `cargo test`, `cargo deny`, and `cargo llvm-cov`. It keeps `DATABASE_URL`, `MONGODB_URL`, `REDIS_URL`, and `SCYLLA_URL` when those are already set, and otherwise uses the Compose URLs above so the adapter tests run. Line coverage must stay at or above 85%. The transport harness and the end-to-end bench are excluded from that number.
 
 `clients/scripts/compat.sh` starts a synthetic group and runs each SDK. CI runs that suite in the `sdks` job. `check`, `coverage`, and `deny` do not install those toolchains.
+
+The C client image builds `diavasi_consume`, joins the synthetic group `demo`, and exits. Compose then stops the server. The first build compiles the server.
+
+```bash
+docker compose -f clients/docker-compose.yml --profile c up --abort-on-container-exit
+```
 
 ### Architecture
 

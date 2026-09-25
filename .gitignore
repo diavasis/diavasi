@@ -31,3 +31,6 @@ clients/csharp/**/obj/
 clients/c/proto_test
 clients/c/diavasi_consume
 clients/c/consume_test
+clients/c/process
+clients/zig/.zig-cache/
+clients/zig/zig-out/

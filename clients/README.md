@@ -14,8 +14,9 @@ Packages are unpublished. Install from this repo. The name in the last column is
 | Java | [README](java/README.md) | Gradle project `clients/java` | Maven Central, unpublished | `java` |
 | C# | [README](csharp/README.md) | `clients/csharp/Diavasi.Data` | NuGet, unpublished | `csharp` |
 | C | [README](c/README.md) | `make` in `clients/c` | none | `c` |
+| Zig | [README](zig/README.md) | `zig build` in `clients/zig` | none | none |
 
-Each guide has the library call, the example flags, protocol errors 1 through 8, and a test that skips until `DIAVASI_DATA_ADDR`, `DIAVASI_CA`, and `DIAVASI_API_TOKEN` are set.
+Each guide has the library call, the example flags, protocol errors 1 through 8, and a test that skips until `DIAVASI_DATA_ADDR`, `DIAVASI_CA`, and `DIAVASI_API_TOKEN` are set. The Elixir guide also shows a GenServer consumer, `Task.async/1`, Flow, GenStage, and Broadway.
 
 ```bash
 ./clients/scripts/compat.sh
@@ -37,6 +38,6 @@ The same shape works for `elixir`, `rust`, `go`, `js`, `java`, `csharp`, and `c`
 docker compose -f clients/docker-compose.yml --profile notebook up
 ```
 
-JupyterLab is on port 8888. Kernels: Python (`ipykernel`), Rust (`evcxr_jupyter`), Go (`gophernotes`), JavaScript and TypeScript (`tslab`), Java (`IJava`), and C# (`dotnet-interactive`). The first image build takes a long time. Elixir is the Livebook service on port 8080, using [elixir/notebooks/demo.livemd](elixir/notebooks/demo.livemd). C has no Jupyter kernel. The C demo is the Compose profile. CI does not build this image.
+JupyterLab is on port 8888. Kernels: Python (`ipykernel`), Rust (`evcxr_jupyter`), Go (`gophernotes`), JavaScript and TypeScript (`tslab`), Java (`IJava`), and C# (`dotnet-interactive`). The first image build takes a long time. Elixir is the Livebook service on port 8080, using [elixir/notebooks/demo.livemd](elixir/notebooks/demo.livemd). C and Zig have no Jupyter kernel. The C image build is in the root README under Developing Diavasi. CI does not build this image.
 
 The Stage 0 TCP bench clients remain in the Python and Elixir trees. They speak a different protocol from `data.proto`.
