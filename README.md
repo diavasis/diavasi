@@ -55,12 +55,14 @@ export PATH="$PWD/target/debug:$PATH"
 
 The Compose file in Get started is the container path. Database images, for when a group reads a real source, are in [docker-compose.yml](docker-compose.yml):
 
-| Service | Image | Host port |
-| --- | --- | --- |
-| Postgres | `postgres:16-alpine` | 5433 |
-| MongoDB | `mongo:7` | 27017 |
-| Redis | `redis:7-alpine` | 6379 |
-| ScyllaDB | `scylladb/scylla:2026.1` | 9042 |
+
+| Service  | Image                    | Host port |
+| -------- | ------------------------ | --------- |
+| Postgres | `postgres:16-alpine`     | 5433      |
+| MongoDB  | `mongo:7`                | 27017     |
+| Redis    | `redis:7-alpine`         | 6379      |
+| ScyllaDB | `scylladb/scylla:2026.1` | 9042      |
+
 
 Postgres is on 5433 so it does not collide with a local server on 5432. Start them with `docker compose up -d`.
 
@@ -81,15 +83,17 @@ diavasi serve \
   --store-key "$DIAVASI_STORE_KEY"
 ```
 
-| Flag | Environment | Role |
-| --- | --- | --- |
-| `--bind` | | Control plane. Default `127.0.0.1:7700`. |
-| `--data-bind` | | Data plane, TLS gRPC. Default `127.0.0.1:7710`. |
-| `--store` | | redb file. The data-plane CA is written next to it as `dataplane-ca.crt`. |
-| `--token` | `DIAVASI_API_TOKEN` | Bearer token for `/v1` and for `DataPlane.Consume`. |
-| `--store-key` | `DIAVASI_STORE_KEY` | 32-byte hex key for secrets in the store. |
 
-`GET /health` needs no token. Every `/v1` route requires `Authorization: Bearer <token>`.
+| Flag          | Environment         | Role                                                                      |
+| ------------- | ------------------- | ------------------------------------------------------------------------- |
+| `--bind`      |                     | Control plane. Default `127.0.0.1:7700`.                                  |
+| `--data-bind` |                     | Data plane, TLS gRPC. Default `127.0.0.1:7710`.                           |
+| `--store`     |                     | redb file. The data-plane CA is written next to it as `dataplane-ca.crt`. |
+| `--token`     | `DIAVASI_API_TOKEN` | Bearer token for `/v1` and for `DataPlane.Consume`.                       |
+| `--store-key` | `DIAVASI_STORE_KEY` | 32-byte hex key for secrets in the store.                                 |
+
+
+`GET /health` and `GET /ready` need no token. Every `/v1` route and `GET /metrics` require `Authorization: Bearer <token>`.
 
 ### Running
 
@@ -124,7 +128,17 @@ Postgres uses `DATABASE_URL` or `postgres://diavasi:diavasi@127.0.0.1:5433/diava
 
 ### Monitoring
 
-`GET /health` reports that the process is up. `diavasi status` reports groups. v0.12.0 on the roadmap adds metrics, a ratatui client of the HTTP API, and a Tauri app on the same API.
+`GET /health` reports that the process is up. `GET /ready` reports that the store can be read. `GET /metrics` is Prometheus text. `diavasi status` lists running groups. `diavasi group diagnostics <id>` reports the committed cursor, the fetched cursor, buffer and in-flight records, ack and replay counters, and why the group last stopped.
+
+`diavasi tui` is that same view, live. It needs `DIAVASI_URL` and `DIAVASI_API_TOKEN`.
+
+```bash
+diavasi tui
+```
+
+![Diavasi TUI with groups demo and trades. trades is selected and its diagnostics show a full buffer, lag 1024, and last stop paused.](docs/screenshots/diavasi-Screenshot-TUI.png)
+
+`j` and `k` move between groups. `s` starts the selected group, `p` pauses it, `d` drains it, `r` refreshes, and `q` quits. Pane by pane: [docs/observability.md](docs/observability.md).
 
 ### Coding consumers
 
@@ -166,26 +180,29 @@ Language, install, and the Compose profile for each SDK are in [clients/README.m
 
 ## Road map
 
-| Release/Stage | Focus | Status |
-| --- | --- | --- |
-| v0.0.0 | Workspace/CI + data-plane transport bake-off | Done |
-| v0.1.0 | In-memory consumer-group domain | Done |
-| v0.2.0 | Durable metadata store (redb) | Done |
-| v0.3.0 | Supervised per-group Tokio runtime | Done |
-| v0.4.0 | HTTP control plane + CLI | Done |
-| v0.5.0 | Protocol v1 data plane (TLS gRPC, auth, backpressure) | Done |
-| v0.5.0/Demo | Livebook: server, synthetic group, Python and Elixir clients ([notebook](clients/elixir/notebooks/demo.livemd)) | Next |
-| v0.6.0 | PostgreSQL adapter. After it lands, Docker Compose replaces the synthetic source | Done |
-| v0.7.0 | End-to-end Postgres benchmarks / resource model | Done |
-| v0.8.0 | MongoDB adapter. Object `_id` or a declared sort; resume is a `find` keyset | Done |
-| v0.9.0 | Redis adapter. Stream id order; resume is `XGROUP SETID` plus `XREADGROUP` | Done |
-| v0.10.0 | ScyllaDB adapter. One partition in clustering order, or an explicit token scan. Resume is the logical key | Done |
-| v0.11.0 | Thin SDKs (Elixir, Rust, Python, Go, JavaScript, Java, C#, C) | Done |
-| v0.12.0 | Metrics, soak, operator diagnostics. First a ratatui client of the HTTP API, then a Tauri 2 app on the same API | Planned |
-| v0.13.0 | S3 adapter. Object key is the order; resume is `ListObjects` `StartAfter` | Planned |
-| v0.14.0 | Reconciliation research (ADR only) | Planned |
 
-Stage tutorials and reviews live under [`docs/`](docs/).
+| Release/Stage | Focus                                                                                                           | Status  |
+| ------------- | --------------------------------------------------------------------------------------------------------------- | ------- |
+| v0.0.0        | Workspace/CI + data-plane transport bake-off                                                                    | Done    |
+| v0.1.0        | In-memory consumer-group domain                                                                                 | Done    |
+| v0.2.0        | Durable metadata store (redb)                                                                                   | Done    |
+| v0.3.0        | Supervised per-group Tokio runtime                                                                              | Done    |
+| v0.4.0        | HTTP control plane + CLI                                                                                        | Done    |
+| v0.5.0        | Protocol v1 data plane (TLS gRPC, auth, backpressure)                                                           | Done    |
+| v0.5.0/Demo   | Livebook: server, synthetic group, Python and Elixir clients ([notebook](clients/elixir/notebooks/demo.livemd)) | Next    |
+| v0.6.0        | PostgreSQL adapter. After it lands, Docker Compose replaces the synthetic source                                | Done    |
+| v0.7.0        | End-to-end Postgres benchmarks / resource model                                                                 | Done    |
+| v0.8.0        | MongoDB adapter. Object `_id` or a declared sort; resume is a `find` keyset                                     | Done    |
+| v0.9.0        | Redis adapter. Stream id order; resume is `XGROUP SETID` plus `XREADGROUP`                                      | Done    |
+| v0.10.0       | ScyllaDB adapter. One partition in clustering order, or an explicit token scan. Resume is the logical key       | Done    |
+| v0.11.0       | Thin SDKs (Elixir, Rust, Python, Go, JavaScript, Java, C#, C)                                                   | Done    |
+| v0.12.0       | Metrics, soak, operator diagnostics, and a ratatui client of the HTTP API (`diavasi tui`)                       | Done    |
+| v0.13.0       | S3 adapter. Object key is the order; resume is `ListObjects` `StartAfter`                                       | Planned |
+| v0.14.0       | Reconciliation research (ADR only)                                                                              | Planned |
+| v0.15.0       | Tauri 2 app on the same HTTP API                                                                                | Planned |
+
+
+Stage tutorials and reviews live under `[docs/](docs/)`.
 
 ## Developing Diavasi
 
@@ -210,14 +227,16 @@ docker compose -f clients/docker-compose.yml --profile c up --abort-on-container
 
 [docs/architecture.md](docs/architecture.md) is the map of the running system: one process, one supervised runtime per group, a logical cursor in redb, and adapters that only implement `RecordSource`.
 
-| Crate | Role |
-| --- | --- |
-| `diavasi` | Server library (core, store, runtime, control plane, data plane) |
-| `diavasi-cli` | Admin CLI (`diavasi`) |
-| `diavasi-adapter-postgres` | PostgreSQL keyset source |
-| `diavasi-adapter-mongodb` | MongoDB find keyset source |
-| `diavasi-adapter-redis` | Redis Streams source |
-| `diavasi-adapter-scylla` | ScyllaDB partition and token-scan source |
+
+| Crate                      | Role                                                             |
+| -------------------------- | ---------------------------------------------------------------- |
+| `diavasi`                  | Server library (core, store, runtime, control plane, data plane) |
+| `diavasi-cli`              | Admin CLI and the ratatui dashboard (`diavasi`, `diavasi tui`)   |
+| `diavasi-adapter-postgres` | PostgreSQL keyset source                                         |
+| `diavasi-adapter-mongodb`  | MongoDB find keyset source                                       |
+| `diavasi-adapter-redis`    | Redis Streams source                                             |
+| `diavasi-adapter-scylla`   | ScyllaDB partition and token-scan source                         |
+
 
 ## License
 

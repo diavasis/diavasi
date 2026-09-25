@@ -32,7 +32,8 @@ tokio-util = { version = "0.7", features = ["codec"] }
 tonic = "0.12"
 tonic-build = "0.12"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+prometheus = { version = "0.13", default-features = false }
 quinn = "0.11"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rcgen = "0.13"

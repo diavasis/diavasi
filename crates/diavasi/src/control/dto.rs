@@ -75,6 +75,36 @@ pub struct ConsumersView {
     pub consumers: Vec<String>,
 }
 
+/// Operator view of one group: position, lag, counters, and the last stop.
+///
+/// `fetched_cursor` is the runtime's read position while `running` is true.
+/// A null cursor then means the group has not fetched yet. While `running` is
+/// false there is no live fetched position, so `fetched_cursor` is null.
+/// `last_stop_reason` and `recovered` are process-local.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiagnosticsView {
+    pub group_id: String,
+    pub running: bool,
+    pub lifecycle: GroupLifecycle,
+    pub committed_cursor: LogicalCursor,
+    pub fetched_cursor: LogicalCursor,
+    pub buffer_records: u64,
+    pub buffer_bytes: u64,
+    pub inflight_records: u64,
+    pub consumers: Vec<String>,
+    pub records_fetched: u64,
+    pub records_delivered: u64,
+    pub records_acked: u64,
+    pub records_replayed: u64,
+    pub bytes: u64,
+    pub checkpoint_lag: u64,
+    pub restarts: u64,
+    pub consumer_disconnects: u64,
+    pub adapter_errors: u64,
+    pub last_stop_reason: Option<String>,
+    pub recovered: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorBody {
     pub error: String,

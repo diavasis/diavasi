@@ -4,14 +4,15 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 
 use crate::core::{ConsumerId, GroupId};
+use crate::observe::GaugeSample;
 use crate::runtime::{GroupSupervisor, RuntimeError, SourceFactory, SourceOpen};
 use crate::store::{
     ConnectionRecord, DurableGroup, RedbStore, StateStore, StoreKey, open_secret, seal_secret,
 };
 
 use super::dto::{
-    CheckpointView, ConnectionCreateRequest, ConnectionView, ConsumersView, GroupCreateRequest,
-    GroupView, StatusView, group_config_from_create,
+    CheckpointView, ConnectionCreateRequest, ConnectionView, ConsumersView, DiagnosticsView,
+    GroupCreateRequest, GroupView, StatusView, group_config_from_create,
 };
 use super::error::{ControlError, ControlResult};
 
@@ -55,6 +56,32 @@ impl ControlService {
     pub async fn supervise_once(&self) -> ControlResult<Vec<GroupId>> {
         let mut sup = self.supervisor.lock().await;
         Ok(sup.supervise_once().await?)
+    }
+
+    pub fn ready(&self) -> ControlResult<()> {
+        self.store.list_groups()?;
+        Ok(())
+    }
+
+    pub async fn encode_metrics(&self) -> String {
+        let (observe, handles) = {
+            let sup = self.supervisor.lock().await;
+            (sup.observe(), sup.running_handles())
+        };
+        let mut samples = Vec::with_capacity(handles.len());
+        for handle in &handles {
+            if let Ok(snap) = handle.live_snapshot().await {
+                samples.push(GaugeSample {
+                    group_id: handle.group_id.as_str().to_string(),
+                    buffer_records: snap.buffer_records as u64,
+                    buffer_bytes: snap.buffer_bytes as u64,
+                    inflight_records: snap.inflight_records as u64,
+                    checkpoint_lag: (snap.buffer_records + snap.inflight_records) as u64,
+                    consumer_count: snap.consumers.len() as u64,
+                });
+            }
+        }
+        observe.render(handles.len(), &samples)
     }
 
     pub async fn status(&self) -> StatusView {
@@ -283,6 +310,86 @@ impl ControlService {
         Ok(ConsumersView {
             group_id: id.to_string(),
             consumers,
+        })
+    }
+
+    pub async fn diagnostics(&self, id: &str) -> ControlResult<DiagnosticsView> {
+        let gid = GroupId::new(id).map_err(|e| ControlError::BadRequest(e.to_string()))?;
+        let rec = self
+            .store
+            .get_group(&gid)?
+            .ok_or_else(|| ControlError::NotFound(format!("group not found: {id}")))?;
+        let adapter = match &rec.connection_id {
+            None => "synthetic".to_string(),
+            Some(connection_id) => self
+                .store
+                .get_connection(connection_id)?
+                .map(|connection| connection.kind)
+                .unwrap_or_else(|| "unknown".to_string()),
+        };
+        let (handle, outcome, observe) = {
+            let sup = self.supervisor.lock().await;
+            (sup.get_handle(&gid), sup.outcome(&gid), sup.observe())
+        };
+        let counters = observe.counters(gid.as_str(), &adapter);
+        let live = match handle {
+            Some(handle) => handle.live_snapshot().await.ok(),
+            None => None,
+        };
+        let running = live.is_some();
+        let checkpoint_lag = live
+            .as_ref()
+            .map(|snap| (snap.buffer_records + snap.inflight_records) as u64)
+            .unwrap_or(0);
+        let committed_cursor = match &live {
+            Some(snap) => snap.committed.clone(),
+            None => self.store.load_checkpoint(&gid)?,
+        };
+        Ok(DiagnosticsView {
+            group_id: id.to_string(),
+            running,
+            lifecycle: live
+                .as_ref()
+                .map(|snap| snap.lifecycle)
+                .unwrap_or(rec.lifecycle),
+            committed_cursor,
+            fetched_cursor: live
+                .as_ref()
+                .map(|snap| snap.fetched.clone())
+                .unwrap_or(None),
+            buffer_records: live
+                .as_ref()
+                .map(|snap| snap.buffer_records as u64)
+                .unwrap_or(0),
+            buffer_bytes: live
+                .as_ref()
+                .map(|snap| snap.buffer_bytes as u64)
+                .unwrap_or(0),
+            inflight_records: live
+                .as_ref()
+                .map(|snap| snap.inflight_records as u64)
+                .unwrap_or(0),
+            consumers: live
+                .map(|snap| {
+                    snap.consumers
+                        .into_iter()
+                        .map(|consumer| consumer.to_string())
+                        .collect()
+                })
+                .unwrap_or_default(),
+            records_fetched: counters.records_fetched,
+            records_delivered: counters.records_delivered,
+            records_acked: counters.records_acked,
+            records_replayed: counters.records_replayed,
+            bytes: counters.bytes,
+            checkpoint_lag,
+            restarts: counters.restarts,
+            consumer_disconnects: counters.consumer_disconnects,
+            adapter_errors: counters.adapter_errors,
+            last_stop_reason: outcome
+                .as_ref()
+                .map(|outcome| outcome.last_stop_reason.clone()),
+            recovered: outcome.map(|outcome| outcome.recovered).unwrap_or(false),
         })
     }
 

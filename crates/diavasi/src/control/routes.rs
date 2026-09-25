@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
+use axum::http::{StatusCode, header};
 use axum::middleware;
+use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use tower_http::limit::RequestBodyLimitLayer;
@@ -39,6 +41,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/groups/{id}/drain", post(drain_group))
         .route("/v1/groups/{id}/consumers", get(list_consumers))
         .route("/v1/groups/{id}/checkpoint", get(checkpoint))
+        .route("/v1/groups/{id}/diagnostics", get(diagnostics))
         .layer(middleware::from_fn_with_state(
             state.auth.clone(),
             require_bearer::<BearerTokenAuth>,
@@ -46,6 +49,7 @@ pub fn router(state: AppState) -> Router {
 
     Router::new()
         .route("/health", get(health))
+        .route("/ready", get(ready))
         .merge(authed)
         .layer(RequestBodyLimitLayer::new(BODY_LIMIT))
         .with_state(state)
@@ -55,8 +59,16 @@ async fn health() -> &'static str {
     "ok"
 }
 
-async fn metrics() -> &'static str {
-    "# diavasi metrics stub\nok 1\n"
+async fn ready(State(state): State<AppState>) -> impl IntoResponse {
+    match state.service.ready() {
+        Ok(()) => (StatusCode::OK, "ok").into_response(),
+        Err(_) => (StatusCode::SERVICE_UNAVAILABLE, "not ready").into_response(),
+    }
+}
+
+async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
+    let body = state.service.encode_metrics().await;
+    ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], body).into_response()
 }
 
 async fn status(State(state): State<AppState>) -> Json<super::dto::StatusView> {
@@ -154,4 +166,11 @@ async fn checkpoint(
     Path(id): Path<String>,
 ) -> ControlResult<Json<super::dto::CheckpointView>> {
     Ok(Json(state.service.checkpoint(&id).await?))
+}
+
+async fn diagnostics(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ControlResult<Json<super::dto::DiagnosticsView>> {
+    Ok(Json(state.service.diagnostics(&id).await?))
 }

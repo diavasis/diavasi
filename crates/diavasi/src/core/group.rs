@@ -97,6 +97,10 @@ impl GroupEngine {
         self.inflight.len()
     }
 
+    pub fn inflight_records(&self) -> usize {
+        self.inflight.record_count()
+    }
+
     pub fn config(&self) -> &GroupConfig {
         &self.config
     }

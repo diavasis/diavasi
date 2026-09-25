@@ -379,7 +379,160 @@ async fn source_fetch_error_stops_the_group_task() {
             ..Default::default()
         },
         Some(Box::new(FailSource)),
+        crate::observe::Observe::new(),
+        "synthetic".into(),
     );
     let err = spawned.join.await.unwrap().unwrap_err();
     assert!(err.to_string().contains("database unavailable"), "{err}");
+}
+
+async fn wait_recovered(
+    sup: &mut GroupSupervisor<RedbStore>,
+    gid: &GroupId,
+) -> crate::runtime::GroupOutcome {
+    for _ in 0..50 {
+        sup.supervise_once().await.unwrap();
+        if let Some(outcome) = sup.outcome(gid) {
+            if outcome.recovered {
+                return outcome;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("group did not recover");
+}
+
+#[tokio::test]
+async fn abort_restarts_without_moving_the_cursor() {
+    let (_dir, store) = temp_store();
+    persist_group(&store, "g1", 20, 8, 4);
+    let mut sup =
+        GroupSupervisor::new(Arc::clone(&store)).with_runtime_config(GroupRuntimeConfig {
+            fetch_interval: Duration::from_millis(5),
+            tick_interval: Duration::from_millis(20),
+            ..Default::default()
+        });
+    let gid = GroupId::new("g1").unwrap();
+    sup.start_group(&gid).await.unwrap();
+    sup.abort_group(&gid).unwrap();
+    let outcome = wait_recovered(&mut sup, &gid).await;
+    assert_eq!(outcome.last_stop_reason, "task aborted");
+    assert!(outcome.recovered);
+    assert_eq!(sup.observe().counters("g1", "synthetic").restarts, 1);
+    assert_eq!(store.load_checkpoint(&gid).unwrap(), None);
+}
+
+#[tokio::test]
+async fn source_error_is_explicit_then_recovered() {
+    let (_dir, store) = temp_store();
+    persist_group(&store, "g1", 8, 4, 2);
+    let mut sup =
+        GroupSupervisor::new(Arc::clone(&store)).with_runtime_config(GroupRuntimeConfig {
+            fetch_interval: Duration::from_millis(5),
+            ..Default::default()
+        });
+    let gid = GroupId::new("g1").unwrap();
+    sup.start_group_with_source(&gid, Some(Box::new(FailSource)))
+        .await
+        .unwrap();
+    let outcome = wait_recovered(&mut sup, &gid).await;
+    assert_eq!(outcome.last_stop_reason, "database unavailable");
+    assert!(outcome.recovered);
+    assert!(sup.observe().counters("g1", "synthetic").adapter_errors >= 1);
+    assert_eq!(store.load_checkpoint(&gid).unwrap(), None);
+}
+
+#[test]
+fn checkpoint_write_failure_does_not_advance_the_cursor() {
+    use crate::store::{CrashAction, CrashPoint, StoreError};
+
+    let (dir, store) = temp_store();
+    let mut group = DurableGroup::create(Arc::clone(&store), cfg("g1", 8, 10, 2), "synthetic-u64")
+        .unwrap()
+        .with_crash_hook(Arc::new(|point| {
+            if point == CrashPoint::BeforeTxnCommit {
+                CrashAction::Abort
+            } else {
+                CrashAction::Continue
+            }
+        }));
+    group.start().unwrap();
+    let consumer = ConsumerId::new("c1").unwrap();
+    group.join_consumer(consumer.clone()).unwrap();
+    assert_eq!(group.poll_fetch().unwrap(), 8);
+    let batch = group.assign_batch(&consumer).unwrap();
+    let err = group.ack(batch.id).unwrap_err();
+    assert!(matches!(
+        err,
+        StoreError::SimulatedCrash(CrashPoint::BeforeTxnCommit)
+    ));
+    let gid = group.group_id().clone();
+    drop(group);
+    drop(store);
+    let store = Arc::new(RedbStore::open(dir.path().join("diavasi.redb")).unwrap());
+    let group = DurableGroup::open(store, &gid).unwrap();
+    assert_eq!(group.committed_cursor(), &None);
+}
+
+#[tokio::test]
+async fn slow_consumer_lag_stays_within_the_buffer_cap() {
+    use crate::observe::GaugeSample;
+
+    let (_dir, store) = temp_store();
+    persist_group(&store, "g1", 30, 4, 2);
+    let mut sup =
+        GroupSupervisor::new(Arc::clone(&store)).with_runtime_config(GroupRuntimeConfig {
+            fetch_interval: Duration::from_millis(2),
+            tick_interval: Duration::from_secs(60),
+            ..Default::default()
+        });
+    let gid = GroupId::new("g1").unwrap();
+    let handle = sup.start_group(&gid).await.unwrap();
+    let consumer = ConsumerId::new("c1").unwrap();
+    handle.join(consumer.clone()).await.unwrap();
+    let mut assigned = false;
+    for _ in 0..100 {
+        match handle.assign(&consumer).await {
+            Ok(_) => {
+                assigned = true;
+                break;
+            }
+            Err(RuntimeError::Core(crate::core::CoreError::NoWork)) => {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert!(assigned, "consumer received no batch");
+    let mut filled = None;
+    for _ in 0..100 {
+        let snap = handle.live_snapshot().await.unwrap();
+        if snap.buffer_records == 4 && snap.inflight_records == 2 {
+            filled = Some(snap);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let snap = filled.expect("buffer did not fill while the consumer held a batch");
+    assert!(snap.buffer_records <= 4);
+    assert_eq!(snap.buffer_records + snap.inflight_records, 6);
+    let text = sup.observe().render(
+        1,
+        &[GaugeSample {
+            group_id: "g1".into(),
+            buffer_records: snap.buffer_records as u64,
+            buffer_bytes: snap.buffer_bytes as u64,
+            inflight_records: snap.inflight_records as u64,
+            checkpoint_lag: 6,
+            consumer_count: snap.consumers.len() as u64,
+        }],
+    );
+    assert!(
+        text.contains("diavasi_group_checkpoint_lag{group_id=\"g1\"} 6"),
+        "{text}"
+    );
+    assert!(
+        text.contains("diavasi_group_inflight_records{group_id=\"g1\"} 2"),
+        "{text}"
+    );
 }

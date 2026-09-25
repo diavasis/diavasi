@@ -41,10 +41,11 @@ One Diavasi server hosts many independent consumer-group runtimes under a superv
 | Control plane / CLI | Stage 4 complete (`diavasi::control` + `diavasi` CLI; see docs/tutorials/stage-04-control-plane.md) |
 | Database adapters | Stage 6: PostgreSQL keyset reader ([ADR 0008](adr/0008-postgres-query-contract.md)). Stage 8: MongoDB find keyset ([ADR 0009](adr/0009-mongodb-query-contract.md)). Stage 9: Redis Streams ([ADR 0010](adr/0010-redis-query-contract.md)). Stage 10: ScyllaDB partition keyset and token scan ([ADR 0011](adr/0011-scylla-query-contract.md)) |
 | Performance / resource model | Stage 7: end-to-end Postgres benchmark and idle vs active group cost ([docs/bench/stage-07.md](bench/stage-07.md), [docs/resource-model.md](resource-model.md)) |
+| Observability | Stage 12: Prometheus `/metrics`, `GET /ready`, group diagnostics ([docs/observability.md](observability.md), [ADR 0013](adr/0013-observability.md)) |
 
 ## Control plane (Stage 4)
 
-Operators talk to a versioned HTTP API (`/v1`) served by axum inside the Diavasi process. The `diavasi` CLI is an HTTP client (plus `diavasi serve` which hosts the control plane). Auth is a shared bearer token; connection secrets are sealed at rest and never returned after create. Lifecycle verbs map onto `GroupSupervisor` (`pause` = graceful stop). See [ADR 0005](adr/0005-control-plane.md).
+Operators talk to a versioned HTTP API (`/v1`) served by axum inside the Diavasi process. The `diavasi` CLI is an HTTP client (plus `diavasi serve` which hosts the control plane). `diavasi tui` is the same client as a live dashboard. Auth is a shared bearer token; connection secrets are sealed at rest and never returned after create. Lifecycle verbs map onto `GroupSupervisor` (`pause` = graceful stop). See [ADR 0005](adr/0005-control-plane.md).
 
 ## Data plane (Stage 5)
 
@@ -69,6 +70,12 @@ A group bound to a `scylla` connection reads one partition in clustering order, 
 ## Client SDKs (Stage 11)
 
 Elixir, Rust, Python, Go, JavaScript, Java, C#, and C are thin clients of `diavasi.data.v1`. They join, yield batches, and ack by `batch_id`. They do not store a cursor. Guides for each language are indexed in [clients/README.md](../clients/README.md). See [ADR 0012](adr/0012-client-sdks.md) and [docs/tutorials/stage-11-sdks.md](tutorials/stage-11-sdks.md).
+
+## Observability (Stage 12)
+
+`GET /metrics` is Prometheus text and requires the bearer token. Counters move on fetch, delivery, ack, replay, restart, disconnect, and adapter error. Buffer, in-flight, consumer count, and checkpoint lag are gauges filled from live groups at scrape time. Checkpoint lag is records in the buffer plus records in flight, not a subtraction of cursor tuples.
+
+`GET /health` is liveness. `GET /ready` is readiness: the store read succeeded. `GET /v1/groups/{id}/diagnostics` and `diavasi group diagnostics` report position, lag, counters, and the process-local stop reason. `diavasi tui` polls those routes. See [docs/observability.md](observability.md) and [ADR 0013](adr/0013-observability.md).
 
 ## Resource model (Stage 7)
 

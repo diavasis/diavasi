@@ -12,7 +12,7 @@ Secrets on connections must never round-trip in plaintext after create. The engi
 
 ## Decision
 
-- **axum** serves `/v1` on a local bind address. Auth is shared-secret **Bearer** token (`Authorization: Bearer …`) on all routes except `GET /health`. Validator trait `AuthValidator` with `BearerTokenAuth` leaves room for later plugins; no RBAC in Stage 4.
+- **axum** serves `/v1` on a local bind address. Auth is shared-secret **Bearer** token (`Authorization: Bearer …`) on all routes except `GET /health` and `GET /ready`. Validator trait `AuthValidator` with `BearerTokenAuth` leaves room for later plugins; no RBAC in Stage 4.
 - **`ControlService`** wraps `Arc<Mutex<GroupSupervisor<RedbStore>>>` + `Arc<RedbStore>` + `StoreKey`. A background task polls `supervise_once`.
 - **Lifecycle verb mapping:**
   - `start` / `resume` → `GroupSupervisor::start_group`
@@ -27,4 +27,4 @@ Secrets on connections must never round-trip in plaintext after create. The engi
 - Full synthetic-group lifecycle is operable against a local server without Stage 5 data plane.
 - Pause is not a durable engine state; “paused” means not in the supervisor’s running set.
 - Production auth (mTLS, OIDC, RBAC) is deferred; bearer is for local/dev and early ops only.
-- Metrics endpoint is a stub until a real scrape surface exists.
+- `GET /metrics` is Prometheus text as of Stage 12. See [ADR 0013](0013-observability.md).

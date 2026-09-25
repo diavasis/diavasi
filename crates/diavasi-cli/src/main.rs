@@ -98,6 +98,8 @@ enum Commands {
     },
     /// Server status.
     Status,
+    /// Live dashboard of the control plane.
+    Tui,
     #[command(subcommand)]
     Connection(ConnectionCmd),
     #[command(subcommand)]
@@ -173,6 +175,9 @@ enum GroupCmd {
     Drain {
         id: String,
     },
+    Diagnostics {
+        id: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -196,6 +201,7 @@ async fn main() -> ExitCode {
 
 mod adapter_test;
 mod sources;
+mod tui;
 
 async fn run(cli: Cli) -> Result<(), ExitCode> {
     match cli.command {
@@ -212,12 +218,7 @@ async fn run(cli: Cli) -> Result<(), ExitCode> {
             tls_cert,
             tls_key,
         } => {
-            tracing_subscriber::fmt()
-                .with_env_filter(
-                    tracing_subscriber::EnvFilter::try_from_default_env()
-                        .unwrap_or_else(|_| "info".into()),
-                )
-                .init();
+            diavasi::observe::init_serve_tracing();
             let store_key = match store_key {
                 Some(hex) => Some(StoreKey::from_hex(&hex).map_err(|e| {
                     eprintln!("error: {e}");
@@ -302,6 +303,7 @@ struct Client {
 impl Client {
     async fn dispatch(&self, cmd: Commands) -> Result<(), ExitCode> {
         match cmd {
+            Commands::Tui => tui::run(&self.base, &self.token).await,
             Commands::Status => {
                 let v = self.get_json("/v1/status").await?;
                 self.print_value(&v, |v| {
@@ -460,6 +462,29 @@ impl Client {
             Commands::Group(GroupCmd::Pause { id }) => self.group_action(&id, "pause").await,
             Commands::Group(GroupCmd::Resume { id }) => self.group_action(&id, "resume").await,
             Commands::Group(GroupCmd::Drain { id }) => self.group_action(&id, "drain").await,
+            Commands::Group(GroupCmd::Diagnostics { id }) => {
+                let v = self
+                    .get_json(&format!("/v1/groups/{id}/diagnostics"))
+                    .await?;
+                self.print_value(&v, |v| {
+                    let reason = v["last_stop_reason"].as_str().unwrap_or("");
+                    println!(
+                        "group={} running={} lifecycle={:?} lag={} fetched={} acked={} replayed={} disconnects={} restarts={} recovered={} reason={}",
+                        v["group_id"].as_str().unwrap_or(&id),
+                        v["running"],
+                        v["lifecycle"],
+                        v["checkpoint_lag"],
+                        v["records_fetched"],
+                        v["records_acked"],
+                        v["records_replayed"],
+                        v["consumer_disconnects"],
+                        v["restarts"],
+                        v["recovered"],
+                        reason,
+                    );
+                });
+                Ok(())
+            }
             Commands::Consumer(ConsumerCmd::List { group }) => {
                 let v = self
                     .get_json(&format!("/v1/groups/{group}/consumers"))

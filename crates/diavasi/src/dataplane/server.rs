@@ -12,6 +12,7 @@ use tonic::transport::{Identity, Server, ServerTlsConfig};
 use tonic::{Request, Response, Status, Streaming};
 
 use crate::core::{Batch, BatchId, ConsumerId, CoreError, GroupId, OrderingAtom};
+use crate::observe::Observe;
 use crate::runtime::{GroupHandle, GroupSupervisor, RuntimeError};
 use crate::store::RedbStore;
 
@@ -114,6 +115,7 @@ struct JoinedConsumer {
     handle: GroupHandle,
     consumer: ConsumerId,
     left: bool,
+    observe: Observe,
 }
 
 impl JoinedConsumer {
@@ -122,7 +124,11 @@ impl JoinedConsumer {
             return;
         }
         self.left = true;
-        let _ = self.handle.leave(&self.consumer).await;
+        let handle = self.handle.clone();
+        let consumer = self.consumer.clone();
+        let observe = self.observe.clone();
+        let _ = handle.leave(&consumer).await;
+        note_disconnect(&observe, &handle, &consumer);
     }
 }
 
@@ -134,10 +140,21 @@ impl Drop for JoinedConsumer {
         self.left = true;
         let handle = self.handle.clone();
         let consumer = self.consumer.clone();
+        let observe = self.observe.clone();
         tokio::spawn(async move {
             let _ = handle.leave(&consumer).await;
+            note_disconnect(&observe, &handle, &consumer);
         });
     }
+}
+
+fn note_disconnect(observe: &Observe, handle: &GroupHandle, consumer: &ConsumerId) {
+    observe.record_disconnect(handle.group_id.as_str(), consumer.as_str());
+    tracing::info!(
+        group_id = %handle.group_id,
+        consumer_id = %consumer.as_str(),
+        "consumer disconnected"
+    );
 }
 
 async fn drive_session(
@@ -147,6 +164,7 @@ async fn drive_session(
     heartbeat_interval: Duration,
     heartbeat_timeout: Duration,
 ) {
+    let observe = supervisor.lock().await.observe();
     let mut session = Session::new();
     let mut joined: Option<JoinedConsumer> = None;
     let mut last_rx = Instant::now();
@@ -203,7 +221,7 @@ async fn drive_session(
                         for effect in step.effects {
                             match effect {
                                 Effect::Join { group_id, consumer_id } => {
-                                    match join_group(&supervisor, &group_id, &consumer_id).await {
+                                    match join_group(&supervisor, &group_id, &consumer_id, observe.clone()).await {
                                         Ok(consumer) => {
                                             let frame = super::joined(
                                                 consumer.handle.group_id.as_str(),
@@ -226,6 +244,12 @@ async fn drive_session(
                                             .ack(BatchId::from_u64(batch_id))
                                             .await
                                         {
+                                            tracing::warn!(
+                                                group_id = %consumer.handle.group_id,
+                                                consumer_id = %consumer.consumer.as_str(),
+                                                error = %e,
+                                                "ack failed"
+                                            );
                                             session.close();
                                             let _ = tx
                                                 .send(Ok(error_envelope(INTERNAL, e.to_string())))
@@ -320,6 +344,7 @@ async fn join_group(
     supervisor: &Arc<Mutex<GroupSupervisor<RedbStore>>>,
     group_id: &str,
     consumer_id: &str,
+    observe: Observe,
 ) -> Result<JoinedConsumer, Envelope> {
     let gid = match GroupId::new(group_id) {
         Ok(id) => id,
@@ -348,6 +373,7 @@ async fn join_group(
         handle,
         consumer: cid,
         left: false,
+        observe,
     })
 }
 

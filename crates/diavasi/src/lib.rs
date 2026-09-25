@@ -6,10 +6,12 @@
 //! Stage 3: supervised per-group Tokio runtime (`runtime`).
 //! Stage 4: HTTP control plane (`control`).
 //! Stage 5: TLS gRPC data plane (`dataplane`).
+//! Stage 12: Prometheus metrics, readiness, and group diagnostics (`observe`).
 
 pub mod control;
 pub mod core;
 pub mod dataplane;
+pub mod observe;
 pub mod protocol;
 pub mod runtime;
 pub mod store;

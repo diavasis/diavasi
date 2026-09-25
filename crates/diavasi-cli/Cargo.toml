@@ -23,6 +23,7 @@ diavasi-adapter-scylla = { workspace = true }
 futures.workspace = true
 mongodb = "3"
 redis = { version = "0.29", features = ["tokio-comp", "connection-manager"] }
+ratatui = "0.29"
 reqwest.workspace = true
 rustls.workspace = true
 serde.workspace = true

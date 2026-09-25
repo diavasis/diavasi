@@ -61,6 +61,21 @@ async fn health_no_auth() {
 }
 
 #[tokio::test]
+async fn ready_reads_the_store() {
+    let (_dir, state) = test_state("secret-token");
+    let (status, body) = oneshot(
+        state,
+        Request::builder()
+            .uri("/ready")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(&body[..], b"ok");
+}
+
+#[tokio::test]
 async fn auth_rejects_missing_token() {
     let (_dir, state) = test_state("secret-token");
     let (status, _) = oneshot(
@@ -209,6 +224,24 @@ async fn group_lifecycle_http() {
 
     let (status, resp) = oneshot(
         state.clone(),
+        auth_json("GET", "/v1/groups/g1/diagnostics", "tok", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let diag: serde_json::Value = serde_json::from_slice(&resp).unwrap();
+    assert_eq!(diag["running"], false);
+    assert_eq!(diag["last_stop_reason"], "paused");
+    assert_eq!(diag["recovered"], false);
+    assert!(diag["records_acked"].as_u64().unwrap() >= 1);
+
+    let (status, resp) = oneshot(state.clone(), auth_json("GET", "/metrics", "tok", None)).await;
+    assert_eq!(status, StatusCode::OK);
+    let metrics = String::from_utf8(resp.to_vec()).unwrap();
+    assert!(metrics.contains("diavasi_groups_running 0"));
+    assert!(metrics.contains("diavasi_group_records_acked_total"));
+
+    let (status, resp) = oneshot(
+        state.clone(),
         auth_json("POST", "/v1/groups/g1/resume", "tok", None),
     )
     .await;
@@ -247,7 +280,8 @@ async fn missing_routes_use_error_responses() {
     assert_eq!(status, StatusCode::OK);
     let (status, body) = oneshot(state.clone(), auth_json("GET", "/metrics", "tok", None)).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(String::from_utf8(body.to_vec()).unwrap().contains("ok"));
+    let metrics = String::from_utf8(body.to_vec()).unwrap();
+    assert!(metrics.contains("diavasi_groups_running"));
     let (status, _) = oneshot(state.clone(), auth_json("GET", "/v1/groups", "tok", None)).await;
     assert_eq!(status, StatusCode::OK);
     let (status, _) = oneshot(

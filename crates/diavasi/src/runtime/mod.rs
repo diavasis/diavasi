@@ -13,9 +13,9 @@ mod supervisor;
 #[cfg(test)]
 mod tests;
 
-pub use command::{BufferStats, RuntimeCommand};
+pub use command::{BufferStats, LiveSnapshot, RuntimeCommand};
 pub use error::{RuntimeError, RuntimeResult};
 pub use group_runtime::{GroupRuntimeConfig, spawn_group_runtime};
 pub use handle::GroupHandle;
 pub use source_factory::{SourceFactory, SourceOpen};
-pub use supervisor::GroupSupervisor;
+pub use supervisor::{GroupOutcome, GroupSupervisor};

@@ -27,6 +27,10 @@ impl InFlightTracker {
         self.by_batch.len()
     }
 
+    pub fn record_count(&self) -> usize {
+        self.by_batch.values().map(|a| a.records.len()).sum()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.by_batch.is_empty()
     }

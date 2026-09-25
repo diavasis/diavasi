@@ -2,11 +2,13 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
 use tokio::task::{AbortHandle, JoinHandle};
+use tracing::Instrument;
 
-use crate::core::{RecordSource, SourceError};
+use crate::core::{BatchId, RecordSource, SourceError};
+use crate::observe::Observe;
 use crate::store::{DurableGroup, StateStore};
 
-use super::command::{BufferStats, RuntimeCommand};
+use super::command::{BufferStats, LiveSnapshot, RuntimeCommand};
 use super::error::{RuntimeError, RuntimeResult};
 use super::handle::GroupHandle;
 
@@ -42,11 +44,14 @@ pub fn spawn_group_runtime<S>(
     mut durable: DurableGroup<S>,
     config: GroupRuntimeConfig,
     mut source: Option<Box<dyn RecordSource>>,
+    observe: Observe,
+    adapter: String,
 ) -> SpawnedGroup
 where
     S: StateStore + 'static,
 {
     let group_id = durable.group_id().clone();
+    let group_label = group_id.as_str().to_string();
     let (tx, mut rx) = mpsc::channel::<RuntimeCommand>(config.command_capacity);
     let handle = GroupHandle::new(group_id.clone(), tx.clone());
 
@@ -84,14 +89,36 @@ where
                         let _ = reply.send(durable.join_consumer(consumer).map_err(Into::into));
                     }
                     RuntimeCommand::Leave { consumer, reply } => {
-                        let _ = reply.send(durable.leave_consumer(&consumer).map_err(Into::into));
+                        let before = durable.engine().inflight_records();
+                        let result = durable.leave_consumer(&consumer);
+                        if result.is_ok() {
+                            note_replay(
+                                &observe,
+                                &group_label,
+                                &adapter,
+                                before,
+                                durable.engine().inflight_records(),
+                            );
+                        }
+                        let _ = reply.send(result.map_err(Into::into));
                     }
                     RuntimeCommand::Assign { consumer, reply } => {
                         match durable.assign_batch(&consumer) {
                             Ok(batch) => {
                                 let id = batch.id;
+                                let records = batch.records.len() as u64;
                                 if reply.send(Ok(batch)).is_err() {
+                                    let before = durable.engine().inflight_records();
                                     durable.engine_mut().requeue_batch(id);
+                                    note_replay(
+                                        &observe,
+                                        &group_label,
+                                        &adapter,
+                                        before,
+                                        durable.engine().inflight_records(),
+                                    );
+                                } else {
+                                    observe.record_deliver(&group_label, &adapter, records);
                                 }
                             }
                             Err(err) => {
@@ -100,7 +127,14 @@ where
                         }
                     }
                     RuntimeCommand::Ack { batch_id, reply } => {
-                        let _ = reply.send(durable.ack(batch_id).map_err(Into::into));
+                        let result = tracing::debug_span!("group_ack", group_id = %group_label)
+                            .in_scope(|| {
+                                apply_ack(&mut durable, &observe, &group_label, &adapter, batch_id)
+                            });
+                        if let Err(ref err) = result {
+                            tracing::warn!(group_id = %group_label, error = %err, "ack failed");
+                        }
+                        let _ = reply.send(result);
                     }
                     RuntimeCommand::SnapshotCursor { reply } => {
                         let _ = reply.send(Ok(durable.committed_cursor().clone()));
@@ -113,6 +147,18 @@ where
                             inflight_len: eng.inflight_len(),
                             max_buffer_records: eng.config().max_buffer_records,
                             max_buffer_bytes: eng.config().max_buffer_bytes,
+                        }));
+                    }
+                    RuntimeCommand::LiveSnapshot { reply } => {
+                        let eng = durable.engine();
+                        let _ = reply.send(Ok(LiveSnapshot {
+                            lifecycle: eng.lifecycle(),
+                            committed: eng.committed_cursor().clone(),
+                            fetched: eng.fetched_cursor().clone(),
+                            buffer_records: eng.buffer_len(),
+                            buffer_bytes: eng.buffer_bytes(),
+                            inflight_records: eng.inflight_records(),
+                            consumers: durable.list_consumers(),
                         }));
                     }
                     RuntimeCommand::Lifecycle { reply } => {
@@ -131,26 +177,84 @@ where
                                 continue;
                             }
                             let cursor = durable.engine().fetched_cursor().clone();
-                            match source.fetch_after(&cursor, slots).await {
+                            let started = Instant::now();
+                            let fetched = source
+                                .fetch_after(&cursor, slots)
+                                .instrument(tracing::debug_span!(
+                                    "group_fetch",
+                                    group_id = %group_label
+                                ))
+                                .await;
+                            let latency = started.elapsed();
+                            match fetched {
                                 Ok(records) => {
-                                    if let Err(err) = durable.engine_mut().ingest(records) {
-                                        return Err(err.into());
+                                    let sizes: Vec<usize> =
+                                        records.iter().map(|record| record.byte_len()).collect();
+                                    match durable.engine_mut().ingest(records) {
+                                        Ok(0) => {}
+                                        Ok(accepted) => {
+                                            let bytes: usize =
+                                                sizes.into_iter().take(accepted).sum();
+                                            observe.record_fetch(
+                                                &group_label,
+                                                &adapter,
+                                                accepted as u64,
+                                                bytes as u64,
+                                                latency,
+                                            );
+                                        }
+                                        Err(err) => return Err(err.into()),
                                     }
                                 }
                                 Err(SourceError(message)) => {
+                                    observe.record_fetch(&group_label, &adapter, 0, 0, latency);
+                                    observe.record_adapter_error(&group_label, &adapter);
+                                    tracing::warn!(
+                                        group_id = %group_label,
+                                        adapter = %adapter,
+                                        error = %message,
+                                        "adapter fetch failed"
+                                    );
                                     tokio::time::sleep(Duration::from_millis(200)).await;
                                     return Err(RuntimeError::Source(message));
                                 }
                             }
                         } else {
-                            let _ = durable.poll_fetch();
+                            let started = Instant::now();
+                            match durable.poll_fetch() {
+                                Ok(n) if n > 0 => {
+                                    let bytes =
+                                        n.saturating_mul(durable.engine().config().payload_size);
+                                    observe.record_fetch(
+                                        &group_label,
+                                        &adapter,
+                                        n as u64,
+                                        bytes as u64,
+                                        started.elapsed(),
+                                    );
+                                }
+                                Ok(_) => {}
+                                Err(err) => return Err(err.into()),
+                            }
                         }
                     }
                     RuntimeCommand::Tick => {
+                        let before = durable.engine().inflight_records();
                         let _ = durable.tick(Instant::now());
+                        note_replay(
+                            &observe,
+                            &group_label,
+                            &adapter,
+                            before,
+                            durable.engine().inflight_records(),
+                        );
                     }
                     RuntimeCommand::Stop { reply } => {
+                        let started = Instant::now();
                         let res = durable.snapshot_to_store().map_err(Into::into);
+                        if res.is_ok() {
+                            observe.record_checkpoint(&group_label, started.elapsed());
+                        }
                         let _ = reply.send(res);
                         break;
                     }
@@ -173,6 +277,35 @@ where
         abort,
         join,
     }
+}
+
+fn note_replay(observe: &Observe, group: &str, adapter: &str, before: usize, after: usize) {
+    let replayed = before.saturating_sub(after);
+    if replayed > 0 {
+        observe.record_replay(group, adapter, replayed as u64);
+    }
+}
+
+fn apply_ack<S: StateStore>(
+    durable: &mut DurableGroup<S>,
+    observe: &Observe,
+    group: &str,
+    adapter: &str,
+    batch_id: BatchId,
+) -> RuntimeResult<()> {
+    let started = Instant::now();
+    let before_cursor = durable.committed_cursor().clone();
+    let before_inflight = durable.engine().inflight_records();
+    durable.ack(batch_id)?;
+    let elapsed = started.elapsed();
+    let acked = before_inflight.saturating_sub(durable.engine().inflight_records());
+    if acked > 0 {
+        observe.record_ack(group, adapter, acked as u64, elapsed);
+    }
+    if durable.committed_cursor() != &before_cursor {
+        observe.record_checkpoint(group, elapsed);
+    }
+    Ok(())
 }
 
 pub(crate) fn map_join_result(

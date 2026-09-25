@@ -34,6 +34,9 @@ pub enum RuntimeCommand {
     ListConsumers {
         reply: oneshot::Sender<RuntimeResult<Vec<ConsumerId>>>,
     },
+    LiveSnapshot {
+        reply: oneshot::Sender<RuntimeResult<LiveSnapshot>>,
+    },
     Drain {
         reply: oneshot::Sender<RuntimeResult<()>>,
     },
@@ -45,6 +48,17 @@ pub enum RuntimeCommand {
     Stop {
         reply: oneshot::Sender<RuntimeResult<()>>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveSnapshot {
+    pub lifecycle: GroupLifecycle,
+    pub committed: LogicalCursor,
+    pub fetched: LogicalCursor,
+    pub buffer_records: usize,
+    pub buffer_bytes: usize,
+    pub inflight_records: usize,
+    pub consumers: Vec<ConsumerId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

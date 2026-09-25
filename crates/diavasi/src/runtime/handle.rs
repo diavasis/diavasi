@@ -4,7 +4,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::core::{Batch, BatchId, ConsumerId, GroupId, GroupLifecycle, LogicalCursor};
 
-use super::command::{BufferStats, RuntimeCommand};
+use super::command::{BufferStats, LiveSnapshot, RuntimeCommand};
 use super::error::{RuntimeError, RuntimeResult};
 
 const DEFAULT_SEND_TIMEOUT: Duration = Duration::from_secs(5);
@@ -74,6 +74,11 @@ impl GroupHandle {
 
     pub async fn list_consumers(&self) -> RuntimeResult<Vec<ConsumerId>> {
         self.call(|reply| RuntimeCommand::ListConsumers { reply })
+            .await
+    }
+
+    pub async fn live_snapshot(&self) -> RuntimeResult<LiveSnapshot> {
+        self.call(|reply| RuntimeCommand::LiveSnapshot { reply })
             .await
     }
 

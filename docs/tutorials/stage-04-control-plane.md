@@ -110,6 +110,7 @@ diavasi --output json connection show demo-pg
 ## 5. Auth and health
 
 - `GET /health` — no auth (liveness)
+- `GET /ready` — no auth (store can be read)
 - All `/v1/*` and `/metrics` — `Authorization: Bearer <token>`
 - Missing/wrong token → HTTP 401
 
