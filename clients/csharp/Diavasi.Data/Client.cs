@@ -1,4 +1,5 @@
 using System.Net.Security;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography.X509Certificates;
 using Diavasi.Data.V1;
 using Grpc.Core;
@@ -46,7 +47,13 @@ public sealed class Options
 
 public static class DiavasiClient
 {
-    public static async Task<Report> ConsumeAsync(Options options, CancellationToken cancellation = default)
+    /// <summary>
+    /// Join the group and yield each batch. The ack is sent when the caller
+    /// asks for the next batch, after the loop body has processed this one.
+    /// </summary>
+    public static async IAsyncEnumerable<RecordBatch> BatchesAsync(
+        Options options,
+        [EnumeratorCancellation] CancellationToken cancellation = default)
     {
         using var channel = GrpcChannel.ForAddress("https://" + options.Addr, new GrpcChannelOptions
         {
@@ -61,14 +68,42 @@ public static class DiavasiClient
             Hello = new Hello { ProtocolVersion = 1 },
         }, cancellation);
 
-        var report = new Report();
         var sentFlow = false;
+        var seen = 0;
+        var ackedBatches = 0;
         var maxInFlight = options.MaxInFlight == 0 ? 1u : options.MaxInFlight;
-        try
+        while (true)
         {
-            while (await call.ResponseStream.MoveNext(cancellation))
+            bool moved;
+            var streamClosed = false;
+            try
             {
-                var env = call.ResponseStream.Current;
+                moved = await call.ResponseStream.MoveNext(cancellation);
+            }
+            catch (RpcException) when (ExpectMet())
+            {
+                streamClosed = true;
+                moved = false;
+            }
+            catch (RpcException exc)
+            {
+                throw new CallException(exc.StatusCode.ToString(), exc.Status.Detail);
+            }
+
+            if (streamClosed)
+            {
+                yield break;
+            }
+
+            if (!moved)
+            {
+                break;
+            }
+
+            var env = call.ResponseStream.Current;
+            RecordBatch? pending = null;
+            try
+            {
                 switch (env.BodyCase)
                 {
                     case Envelope.BodyOneofCase.HelloAck:
@@ -94,39 +129,7 @@ public static class DiavasiClient
                         }
                         break;
                     case Envelope.BodyOneofCase.RecordBatch:
-                        var batch = env.RecordBatch;
-                        foreach (var record in batch.Records)
-                        {
-                            report.RecordIds.Add(record.RecordId);
-                        }
-                        await call.RequestStream.WriteAsync(new Envelope
-                        {
-                            Version = 1,
-                            Ack = new Ack { BatchId = batch.BatchId },
-                        }, cancellation);
-                        report.BatchIds.Add(batch.BatchId);
-                        if (options.HaltAfterAcks > 0 && report.BatchIds.Count >= options.HaltAfterAcks)
-                        {
-                            try
-                            {
-                                using var extra = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-                                await call.ResponseStream.MoveNext(extra.Token);
-                            }
-                            catch (OperationCanceledException)
-                            {
-                            }
-                            return report;
-                        }
-                        if (options.ExpectRecords > 0 && (ulong)report.RecordIds.Count >= options.ExpectRecords)
-                        {
-                            await call.RequestStream.WriteAsync(new Envelope
-                            {
-                                Version = 1,
-                                Leave = new Leave(),
-                            }, cancellation);
-                            await call.RequestStream.CompleteAsync();
-                            return report;
-                        }
+                        pending = env.RecordBatch;
                         break;
                     case Envelope.BodyOneofCase.Heartbeat:
                         await call.RequestStream.WriteAsync(new Envelope
@@ -141,19 +144,107 @@ public static class DiavasiClient
                         break;
                 }
             }
-        }
-        catch (RpcException) when (options.ExpectRecords > 0 && (ulong)report.RecordIds.Count >= options.ExpectRecords)
-        {
-            return report;
-        }
-        catch (RpcException exc)
-        {
-            throw new CallException(exc.StatusCode.ToString(), exc.Status.Detail);
+            catch (RpcException) when (ExpectMet())
+            {
+                streamClosed = true;
+            }
+            catch (RpcException exc)
+            {
+                throw new CallException(exc.StatusCode.ToString(), exc.Status.Detail);
+            }
+
+            if (streamClosed)
+            {
+                yield break;
+            }
+
+            if (pending is null)
+            {
+                continue;
+            }
+
+            yield return pending;
+
+            var halt = false;
+            var leave = false;
+            try
+            {
+                await call.RequestStream.WriteAsync(new Envelope
+                {
+                    Version = 1,
+                    Ack = new Ack { BatchId = pending.BatchId },
+                }, cancellation);
+                ackedBatches++;
+                seen += pending.Records.Count;
+                if (options.HaltAfterAcks > 0 && (uint)ackedBatches >= options.HaltAfterAcks)
+                {
+                    halt = true;
+                }
+                else if (options.ExpectRecords > 0 && (ulong)seen >= options.ExpectRecords)
+                {
+                    await call.RequestStream.WriteAsync(new Envelope
+                    {
+                        Version = 1,
+                        Leave = new Leave(),
+                    }, cancellation);
+                    await call.RequestStream.CompleteAsync();
+                    leave = true;
+                }
+            }
+            catch (RpcException) when (ExpectMet())
+            {
+                streamClosed = true;
+            }
+            catch (RpcException exc)
+            {
+                throw new CallException(exc.StatusCode.ToString(), exc.Status.Detail);
+            }
+
+            if (halt)
+            {
+                try
+                {
+                    using var extra = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                    await call.ResponseStream.MoveNext(extra.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                }
+                catch (RpcException) when (ExpectMet())
+                {
+                }
+                catch (RpcException exc)
+                {
+                    throw new CallException(exc.StatusCode.ToString(), exc.Status.Detail);
+                }
+
+                yield break;
+            }
+
+            if (leave || streamClosed)
+            {
+                yield break;
+            }
         }
 
-        if (options.ExpectRecords > 0 && (ulong)report.RecordIds.Count < options.ExpectRecords)
+        if (options.ExpectRecords > 0 && (ulong)seen < options.ExpectRecords)
         {
             throw new CallException("Unavailable", "stream ended early");
+        }
+
+        bool ExpectMet() => options.ExpectRecords > 0 && (ulong)seen >= options.ExpectRecords;
+    }
+
+    public static async Task<Report> ConsumeAsync(Options options, CancellationToken cancellation = default)
+    {
+        var report = new Report();
+        await foreach (var batch in BatchesAsync(options, cancellation))
+        {
+            foreach (var record in batch.Records)
+            {
+                report.RecordIds.Add(record.RecordId);
+            }
+            report.BatchIds.Add(batch.BatchId);
         }
         return report;
     }

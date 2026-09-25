@@ -17,6 +17,10 @@ typedef struct diavasi_options {
     uint32_t max_in_flight;
     uint32_t halt_after_acks;
     uint64_t expect_records;
+    /* Called for each record before the batch is acked. NULL skips it.
+     * payload is valid only for the duration of the call. */
+    void (*on_record)(uint64_t batch_id, uint64_t record_id, const uint8_t *payload, size_t payload_len, void *user);
+    void *user;
 } diavasi_options;
 
 typedef struct diavasi_report {

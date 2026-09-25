@@ -68,7 +68,7 @@ A group bound to a `scylla` connection reads one partition in clustering order, 
 
 ## Client SDKs (Stage 11)
 
-Elixir, Rust, Python, Go, JavaScript, Java, C#, and C are thin clients of `diavasi.data.v1`. They join, yield batches, and ack by `batch_id`. They do not store a cursor. See [ADR 0012](adr/0012-client-sdks.md) and [docs/tutorials/stage-11-sdks.md](tutorials/stage-11-sdks.md).
+Elixir, Rust, Python, Go, JavaScript, Java, C#, and C are thin clients of `diavasi.data.v1`. They join, yield batches, and ack by `batch_id`. They do not store a cursor. Guides for each language are indexed in [clients/README.md](../clients/README.md). See [ADR 0012](adr/0012-client-sdks.md) and [docs/tutorials/stage-11-sdks.md](tutorials/stage-11-sdks.md).
 
 ## Resource model (Stage 7)
 

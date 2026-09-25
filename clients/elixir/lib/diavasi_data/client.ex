@@ -91,11 +91,17 @@ defmodule Diavasi.Data.Client do
              ]
            ),
          {:ok, conn, ref} <-
-           Mint.HTTP.request(conn, "POST", @path, [
-             {"content-type", "application/grpc"},
-             {"te", "trailers"},
-             {"authorization", "Bearer #{token}"}
-           ], :stream) do
+           Mint.HTTP.request(
+             conn,
+             "POST",
+             @path,
+             [
+               {"content-type", "application/grpc"},
+               {"te", "trailers"},
+               {"authorization", "Bearer #{token}"}
+             ],
+             :stream
+           ) do
       state = %{
         conn: conn,
         ref: ref,
@@ -112,7 +118,9 @@ defmodule Diavasi.Data.Client do
       state = send_env(state, hello())
 
       case handshake(state) do
-        {:ok, state} -> {:ok, state}
+        {:ok, state} ->
+          {:ok, state}
+
         {:error, reason, state} ->
           Mint.HTTP.close(state.conn)
           {:stop, format_error(reason)}
@@ -173,7 +181,8 @@ defmodule Diavasi.Data.Client do
           end
 
         :done ->
-          {:error, "incomplete consume records=#{length(record_ids)} batches=#{length(batch_ids)}"}
+          {:error,
+           "incomplete consume records=#{length(record_ids)} batches=#{length(batch_ids)}"}
 
         {:error, reason} ->
           {:error, reason}

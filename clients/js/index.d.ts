@@ -23,6 +23,8 @@ export interface ConsumeOptions {
   haltAfterAcks?: number;
   expectRecords?: number;
   protoPath?: string;
+  /** Called with each batch before the ack is sent. */
+  onBatch?: (batch: Batch) => void;
 }
 
 export class ProtocolError extends Error {

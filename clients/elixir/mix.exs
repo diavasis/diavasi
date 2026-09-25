@@ -21,7 +21,10 @@ defmodule DiavasiBench.MixProject do
     [
       {:protobuf, "~> 0.14"},
       {:mint, "~> 1.5"},
-      {:jason, "~> 1.4"}
+      {:jason, "~> 1.4"},
+      {:flow, "~> 1.2"},
+      {:gen_stage, "~> 1.2"},
+      {:broadway, "~> 1.0"}
     ]
   end
 end

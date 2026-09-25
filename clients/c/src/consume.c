@@ -252,6 +252,14 @@ int diavasi_consume(const diavasi_options *options, diavasi_report *report, char
                     rc = -1;
                     break;
                 }
+                if (options->on_record) {
+                    options->on_record(
+                        batch.batch_id,
+                        batch.records[i].record_id,
+                        batch.records[i].payload,
+                        batch.records[i].payload_len,
+                        options->user);
+                }
             }
             reply_len = diavasi_ack_frame(reply, sizeof reply, batch.batch_id);
             if (push_batch(report, batch.batch_id) != 0) {

@@ -117,6 +117,22 @@ function consume(options) {
             report.recordIds.push(asNumber(record.record_id));
           }
           const batchId = asNumber(batch.batch_id);
+          if (typeof options.onBatch === "function") {
+            try {
+              options.onBatch({
+                batchId,
+                records: records.map((record) => ({
+                  recordId: asNumber(record.record_id),
+                  payload: Buffer.isBuffer(record.payload)
+                    ? record.payload
+                    : Buffer.from(record.payload || []),
+                })),
+              });
+            } catch (err) {
+              fail(err);
+              return;
+            }
+          }
           call.write({ version: 1, ack: { batch_id: batchId } });
           report.batchIds.push(batchId);
           if (options.haltAfterAcks && report.batchIds.length >= options.haltAfterAcks) {

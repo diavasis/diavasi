@@ -26,3 +26,5 @@ The native client is C, using the gRPC C stack against the same proto. The Rust 
 ## Consequences
 
 Application code acks batches and can reconnect. It does not compute ordering tuples or call the store. A future language is another tree under `clients/` with the same session, a README, an example, and a test that skips until `DIAVASI_DATA_ADDR`, `DIAVASI_CA`, and `DIAVASI_API_TOKEN` are set.
+
+Client documentation lives in each tree's README under `clients/`. A future package publish uses those same trees.
