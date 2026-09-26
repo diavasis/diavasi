@@ -21,10 +21,12 @@ Every SDK is a thin client of protocol v1:
 - Reconnect opens a new stream with the same consumer id. The server replays unacked batches. The client does not resume from a key.
 - Surface protocol `Error` codes 1 through 8. An unknown version, a missing or wrong token, and a group that is not running fail the call.
 
-The native client is C, using the gRPC C stack against the same proto. The Rust client is `clients/rust` (`diavasi-client`). It is not a dependency of the server crate. No SDK is published from this stage.
+The native client is C, using the gRPC C stack against the same proto. The Rust client is `diavasi-client`. It is not a dependency of the server crate.
+
+From version 0.12.0 each SDK lives in its own repository under the `diavasis` org and publishes from that repository. This repository remains the source of `diavasi.data.v1`. Each client vendors `proto/data.proto` from the matching server tag. The index and install lines are in [clients/README.md](../../clients/README.md).
 
 ## Consequences
 
-Application code acks batches and can reconnect. It does not compute ordering tuples or call the store. A future language is another tree under `clients/` with the same session, a README, an example, and a test that skips until `DIAVASI_DATA_ADDR`, `DIAVASI_CA`, and `DIAVASI_API_TOKEN` are set.
+Application code acks batches and can reconnect. It does not compute ordering tuples or call the store. A future language is another repository with the same session, a README, an example, and a test that skips until `DIAVASI_DATA_ADDR`, `DIAVASI_CA`, and `DIAVASI_API_TOKEN` are set.
 
-Client documentation lives in each tree's README under `clients/`. A future package publish uses those same trees.
+Client documentation lives in each client repository.

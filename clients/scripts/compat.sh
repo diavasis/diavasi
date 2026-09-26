@@ -11,6 +11,12 @@ http_port=${DIAVASI_HTTP_PORT:-17700}
 data_port=${DIAVASI_DATA_PORT:-17710}
 store=$(mktemp -d)
 pid=""
+sdk_root=${DIAVASI_SDK_ROOT:-}
+own_sdk=0
+if [[ -z "$sdk_root" ]]; then
+  sdk_root=$(mktemp -d)
+  own_sdk=1
+fi
 
 cleanup() {
   if [[ -n "$pid" ]]; then
@@ -18,8 +24,29 @@ cleanup() {
     wait "$pid" >/dev/null 2>&1 || true
   fi
   rm -rf "$store"
+  if [[ "$own_sdk" == 1 ]]; then
+    rm -rf "$sdk_root"
+  fi
 }
 trap cleanup EXIT
+
+fetch_sdk() {
+  local repo=$1
+  local dest="$sdk_root/$repo"
+  if [[ -f "$dest/README.md" ]]; then
+    return 0
+  fi
+  rm -rf "$dest"
+  if git clone --depth 1 --branch v0.12.0 "https://github.com/diavasis/${repo}.git" "$dest"; then
+    return 0
+  fi
+  rm -rf "$dest"
+  git clone --depth 1 "https://github.com/diavasis/${repo}.git" "$dest"
+}
+
+for repo in diavasi-elixir diavasi-client diavasi-python diavasi-go diavasi-js diavasi-java diavasi-dotnet diavasi-c diavasi-zig; do
+  fetch_sdk "$repo"
+done
 
 require() {
   local bin=$1
@@ -159,77 +186,75 @@ run_sdk() {
 }
 
 elixir_consume() {
-  (cd "$root/clients/elixir" && mix diavasi.consume "$@")
+  (cd "$sdk_root/diavasi-elixir" && mix diavasi.consume "$@")
 }
 go_consume() {
-  (cd "$root/clients/go" && go run ./cmd/consume "$@")
+  (cd "$sdk_root/diavasi-go" && go run ./cmd/consume "$@")
 }
 js_consume() {
-  (cd "$root/clients/js" && node examples/consume.js "$@")
+  (cd "$sdk_root/diavasi-js" && node examples/consume.js "$@")
 }
 java_consume() {
-  "$root/clients/java/build/install/diavasi-data/bin/diavasi-data" "$@"
+  "$sdk_root/diavasi-java/build/install/diavasi-data/bin/diavasi-data" "$@"
 }
 csharp_consume() {
-  dotnet run --project "$root/clients/csharp/Diavasi.Data/Diavasi.Data.csproj" -c Release --no-build -- "$@"
+  dotnet run --project "$sdk_root/diavasi-dotnet/samples/Consume/Consume.csproj" -c Release --no-build -- "$@"
 }
 
 py=python3
-if [[ -x "$root/clients/python/.venv/bin/python" ]]; then
-  py="$root/clients/python/.venv/bin/python"
-fi
-export PYTHONPATH="$root/clients/python${PYTHONPATH:+:$PYTHONPATH}"
+python -m pip install -q -r "$sdk_root/diavasi-python/requirements.txt"
+export PYTHONPATH="$sdk_root/diavasi-python${PYTHONPATH:+:$PYTHONPATH}"
 run_sdk python "$py" -m diavasi_data
 create_group python-lib
-(cd "$root/clients/python" && DIAVASI_GROUP=python-lib PYTHONPATH=. "$py" -m unittest test_consume.py)
+(cd "$sdk_root/diavasi-python" && DIAVASI_GROUP=python-lib PYTHONPATH=. "$py" -m unittest test_consume.py)
 
 if require elixir elixir; then
-  (cd "$root/clients/elixir" && mix deps.get && mix compile)
+  (cd "$sdk_root/diavasi-elixir" && mix deps.get && mix compile)
   export MIX_QUIET=1
   run_sdk elixir elixir_consume
   create_group elixir-lib
-  (cd "$root/clients/elixir" && DIAVASI_GROUP=elixir-lib mix test)
+  (cd "$sdk_root/diavasi-elixir" && DIAVASI_GROUP=elixir-lib mix test)
 fi
 
 if require cargo rust; then
   create_group rust-lib
-  DIAVASI_GROUP=rust-lib cargo test --manifest-path "$root/clients/rust/Cargo.toml"
-  cargo build --manifest-path "$root/clients/rust/Cargo.toml" --bin diavasi-consume
-  run_sdk rust "$root/clients/rust/target/debug/diavasi-consume"
+  DIAVASI_GROUP=rust-lib cargo test --manifest-path "$sdk_root/diavasi-client/Cargo.toml" --locked
+  cargo build --manifest-path "$sdk_root/diavasi-client/Cargo.toml" --locked --bin diavasi-consume
+  run_sdk rust "$sdk_root/diavasi-client/target/debug/diavasi-consume"
 fi
 
 if require go go; then
   create_group go-lib
-  (cd "$root/clients/go" && DIAVASI_GROUP=go-lib go test ./...)
+  (cd "$sdk_root/diavasi-go" && DIAVASI_GROUP=go-lib go test ./...)
   run_sdk go go_consume
 fi
 
 if require node javascript; then
-  (cd "$root/clients/js" && npm install)
+  (cd "$sdk_root/diavasi-js" && npm install)
   create_group js-lib
-  (cd "$root/clients/js" && DIAVASI_GROUP=js-lib node --test)
+  (cd "$sdk_root/diavasi-js" && DIAVASI_GROUP=js-lib node --test)
   run_sdk js js_consume
 fi
 
 if require java java && require gradle java; then
   create_group java-lib
-  (cd "$root/clients/java" && DIAVASI_GROUP=java-lib gradle --no-daemon test installDist)
+  (cd "$sdk_root/diavasi-java" && DIAVASI_GROUP=java-lib gradle --no-daemon test installDist)
   run_sdk java java_consume
 fi
 
 if require dotnet csharp; then
   create_group csharp-lib
-  DIAVASI_GROUP=csharp-lib dotnet test "$root/clients/csharp/Diavasi.Data.Tests/Diavasi.Data.Tests.csproj" -c Release
-  dotnet build "$root/clients/csharp/Diavasi.Data/Diavasi.Data.csproj" -c Release
+  DIAVASI_GROUP=csharp-lib dotnet test "$sdk_root/diavasi-dotnet/Diavasi.Data.Tests/Diavasi.Data.Tests.csproj" -c Release
+  dotnet build "$sdk_root/diavasi-dotnet/samples/Consume/Consume.csproj" -c Release
   run_sdk csharp csharp_consume
 fi
 
-make -C "$root/clients/c" test-proto
+make -C "$sdk_root/diavasi-c" test-proto
 if pkg-config --exists grpc; then
-  make -C "$root/clients/c" diavasi_consume consume_test
+  make -C "$sdk_root/diavasi-c" diavasi_consume consume_test
   create_group c-lib
-  DIAVASI_GROUP=c-lib ./clients/c/consume_test
-  run_sdk c "$root/clients/c/diavasi_consume"
+  DIAVASI_GROUP=c-lib "$sdk_root/diavasi-c/consume_test"
+  run_sdk c "$sdk_root/diavasi-c/diavasi_consume"
 elif [[ "${DIAVASI_SDK_REQUIRE:-}" == 1 ]]; then
   echo "missing toolchain: grpc" >&2
   exit 1

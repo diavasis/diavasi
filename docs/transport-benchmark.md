@@ -44,11 +44,13 @@ cargo run -p diavasi --release --bin diavasi-transport-bench --features transpor
 
 ```bash
 mise install
-mise exec -- python -m venv clients/python/.venv
-mise exec -- clients/python/.venv/bin/pip install -r clients/python/requirements.txt
-cd clients/python && PYTHONPATH=. .venv/bin/python -m diavasi_bench.gen_proto
+git clone https://github.com/diavasis/diavasi-python.git
+mise exec -- python -m venv diavasi-python/.venv
+mise exec -- diavasi-python/.venv/bin/pip install -r diavasi-python/requirements.txt
+cd diavasi-python && PYTHONPATH=. .venv/bin/python -m diavasi_bench.gen_proto
 
-cd clients/elixir && mise exec -- mix deps.get
+git clone https://github.com/diavasis/diavasi-elixir.git
+cd diavasi-elixir && mise exec -- mix deps.get
 ```
 
 ## Results (release smoke, 200 x 64-byte records, batch 8)
