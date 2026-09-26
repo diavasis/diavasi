@@ -2,7 +2,7 @@
 
 This tutorial shows the frozen production data plane: TLS gRPC protocol v1, mapped onto a running synthetic group.
 
-Related code: `crates/diavasi/src/dataplane/`, `clients/python/diavasi_data/`, `clients/elixir/lib/diavasi_data/`. Decisions: [ADR 0006](../adr/0006-data-plane-transport.md), [ADR 0007](../adr/0007-protocol-v1.md). Prior: [Stage 4](stage-04-control-plane.md).
+Related code: `crates/diavasi/src/dataplane/`, [diavasi-python](https://github.com/diavasis/diavasi-python) `diavasi_data/`, [diavasi-elixir](https://github.com/diavasis/diavasi-elixir) `lib/diavasi_data/`. Decisions: [ADR 0006](../adr/0006-data-plane-transport.md), [ADR 0007](../adr/0007-protocol-v1.md). Prior: [Stage 4](stage-04-control-plane.md).
 
 ## 1. What Stage 5 is
 
@@ -55,10 +55,11 @@ diavasi group start demo
 
 ## 4. Consume it
 
-Python (from `clients/python`, with `grpcio` installed):
+Python (`diavasi-data` 0.1.0):
 
 ```bash
-PYTHONPATH=clients/python clients/python/.venv/bin/python -m diavasi_data \
+pip install diavasi-data==0.1.0
+python -m diavasi_data \
   --addr 127.0.0.1:7710 \
   --ca /tmp/diavasi-s5/dataplane-ca.crt \
   --token "$DIAVASI_API_TOKEN" \
@@ -67,10 +68,9 @@ PYTHONPATH=clients/python clients/python/.venv/bin/python -m diavasi_data \
   --total 20
 ```
 
-Elixir (from `clients/elixir`):
+Elixir (Hex `diavasi` 0.1.0, from a project that depends on it):
 
 ```bash
-cd clients/elixir
 mix diavasi.consume \
   --addr 127.0.0.1:7710 \
   --ca /tmp/diavasi-s5/dataplane-ca.crt \

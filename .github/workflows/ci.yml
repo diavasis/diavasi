@@ -193,8 +193,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Python client dependencies
-        run: python -m pip install -r clients/python/requirements.txt
       - name: gRPC C headers
         run: sudo apt-get update && sudo apt-get install -y libgrpc-dev pkg-config
       - name: SDK compatibility suite

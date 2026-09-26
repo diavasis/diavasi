@@ -62,8 +62,18 @@ fn cli(url: &str, token: &str, args: &[&str]) {
 #[test]
 fn python_and_elixir_consume_synthetic_group() {
     let root = workspace_root();
-    let python = root.join("clients/python/.venv/bin/python");
-    let elixir_dir = root.join("clients/elixir");
+    let sdk = std::env::var_os("DIAVASI_SDK_ROOT").map(PathBuf::from);
+    let python_dir = sdk
+        .as_ref()
+        .map(|path| path.join("diavasi-python"))
+        .filter(|path| path.is_dir())
+        .unwrap_or_else(|| root.join("clients/python"));
+    let python = python_dir.join(".venv/bin/python");
+    let elixir_dir = sdk
+        .as_ref()
+        .map(|path| path.join("diavasi-elixir"))
+        .filter(|path| path.is_dir())
+        .unwrap_or_else(|| root.join("clients/elixir"));
     if !python.exists() {
         eprintln!("skip python client: venv missing");
     }
@@ -137,8 +147,8 @@ fn python_and_elixir_consume_synthetic_group() {
                 "--total",
                 "16",
             ])
-            .current_dir(root.join("clients/python"))
-            .env("PYTHONPATH", root.join("clients/python"))
+            .current_dir(&python_dir)
+            .env("PYTHONPATH", &python_dir)
             .output()
             .unwrap();
         if !out.status.success() {
@@ -151,7 +161,7 @@ fn python_and_elixir_consume_synthetic_group() {
         }
     }
 
-    if Command::new("mise").arg("--version").output().is_ok() {
+    if elixir_dir.is_dir() && Command::new("mise").arg("--version").output().is_ok() {
         cli(
             &url,
             token,

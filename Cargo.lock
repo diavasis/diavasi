@@ -962,7 +962,7 @@ dependencies = [
 
 [[package]]
 name = "diavasi"
-version = "0.1.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "axum 0.8.9",
@@ -1003,7 +1003,7 @@ dependencies = [
 
 [[package]]
 name = "diavasi-adapter-mongodb"
-version = "0.1.0"
+version = "0.12.0"
 dependencies = [
  "bytes",
  "diavasi",
@@ -1017,7 +1017,7 @@ dependencies = [
 
 [[package]]
 name = "diavasi-adapter-postgres"
-version = "0.1.0"
+version = "0.12.0"
 dependencies = [
  "bytes",
  "clap",
@@ -1037,7 +1037,7 @@ dependencies = [
 
 [[package]]
 name = "diavasi-adapter-redis"
-version = "0.1.0"
+version = "0.12.0"
 dependencies = [
  "bytes",
  "diavasi",
@@ -1051,7 +1051,7 @@ dependencies = [
 
 [[package]]
 name = "diavasi-adapter-scylla"
-version = "0.1.0"
+version = "0.12.0"
 dependencies = [
  "bytes",
  "diavasi",
@@ -1068,7 +1068,7 @@ dependencies = [
 
 [[package]]
 name = "diavasi-cli"
-version = "0.1.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "clap",

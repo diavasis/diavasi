@@ -19,8 +19,7 @@ services:
   python:
     profiles: ["python", "all"]
     build:
-      context: ..
-      dockerfile: clients/python/Dockerfile
+      context: https://github.com/diavasis/diavasi-python.git
     depends_on:
       diavasi:
         condition: service_healthy
@@ -34,8 +33,7 @@ services:
   elixir:
     profiles: ["elixir", "all"]
     build:
-      context: ..
-      dockerfile: clients/elixir/Dockerfile
+      context: https://github.com/diavasis/diavasi-elixir.git
     depends_on:
       diavasi:
         condition: service_healthy
@@ -46,8 +44,7 @@ services:
   rust:
     profiles: ["rust", "all"]
     build:
-      context: ..
-      dockerfile: clients/rust/Dockerfile
+      context: https://github.com/diavasis/diavasi-client.git
     depends_on:
       diavasi:
         condition: service_healthy
@@ -58,8 +55,7 @@ services:
   go:
     profiles: ["go", "all"]
     build:
-      context: ..
-      dockerfile: clients/go/Dockerfile
+      context: https://github.com/diavasis/diavasi-go.git
     depends_on:
       diavasi:
         condition: service_healthy
@@ -70,8 +66,7 @@ services:
   js:
     profiles: ["js", "all"]
     build:
-      context: ..
-      dockerfile: clients/js/Dockerfile
+      context: https://github.com/diavasis/diavasi-js.git
     depends_on:
       diavasi:
         condition: service_healthy
@@ -82,8 +77,7 @@ services:
   java:
     profiles: ["java", "all"]
     build:
-      context: ..
-      dockerfile: clients/java/Dockerfile
+      context: https://github.com/diavasis/diavasi-java.git
     depends_on:
       diavasi:
         condition: service_healthy
@@ -94,8 +88,7 @@ services:
   csharp:
     profiles: ["csharp", "all"]
     build:
-      context: ..
-      dockerfile: clients/csharp/Dockerfile
+      context: https://github.com/diavasis/diavasi-dotnet.git
     depends_on:
       diavasi:
         condition: service_healthy
@@ -106,8 +99,7 @@ services:
   c:
     profiles: ["c", "all"]
     build:
-      context: ..
-      dockerfile: clients/c/Dockerfile
+      context: https://github.com/diavasis/diavasi-c.git
     depends_on:
       diavasi:
         condition: service_healthy
@@ -131,17 +123,6 @@ services:
       - ca:/ca:ro
       - ..:/opt/diavasi:ro
     command: ["jupyter", "lab", "--ip=0.0.0.0", "--port=8888", "--no-browser", "--allow-root", "--ServerApp.token=", "--ServerApp.password=", "--notebook-dir=/work"]
-
-  livebook:
-    profiles: ["livebook", "notebook"]
-    image: ghcr.io/livebook-dev/livebook:0.15.5
-    ports:
-      - "8080:8080"
-    environment:
-      LIVEBOOK_TOKEN_ENABLED: "false"
-      LIVEBOOK_IP: "0.0.0.0"
-    volumes:
-      - ./elixir/notebooks:/data
 
 volumes:
   ca:

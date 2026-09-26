@@ -14,15 +14,15 @@ docker compose -f clients/docker-compose.yml --profile python up --abort-on-cont
 
 Each language has its own page: the library call, the example, the errors, and the test.
 
-- [Elixir](../../clients/elixir/README.md)
-- [Rust](../../clients/rust/README.md)
-- [Python](../../clients/python/README.md)
-- [Go](../../clients/go/README.md)
-- [JavaScript](../../clients/js/README.md)
-- [Java](../../clients/java/README.md)
-- [C#](../../clients/csharp/README.md)
-- [C](../../clients/c/README.md)
-- [Zig](../../clients/zig/README.md), calling the C library
+- [Elixir](https://github.com/diavasis/diavasi-elixir) 0.1.0
+- [Rust](https://github.com/diavasis/diavasi-client) 0.1.0
+- [Python](https://github.com/diavasis/diavasi-python) 0.1.0
+- [Go](https://github.com/diavasis/diavasi-go) 0.1.0
+- [JavaScript](https://github.com/diavasis/diavasi-js) 0.1.0
+- [Java](https://github.com/diavasis/diavasi-java) 0.1.0
+- [C#](https://github.com/diavasis/diavasi-dotnet) 0.1.0
+- [C](https://github.com/diavasis/diavasi-c) 0.1.0
+- [Zig](https://github.com/diavasis/diavasi-zig) 0.1.0, calling the C library
 
 The index, including Compose profiles and the notebook image, is [clients/README.md](../../clients/README.md).
 
@@ -46,4 +46,4 @@ curl -X POST -H "Authorization: Bearer sdk-demo" http://127.0.0.1:7700/v1/groups
 
 Point any client at `127.0.0.1:7710`, that CA, and the token `sdk-demo`. The example flags are on each client page.
 
-`clients/scripts/compat.sh` runs every installed SDK against its own synthetic groups: a full consume, a reconnect with the same consumer id, a bad token, and a group that is not running.
+`clients/scripts/compat.sh` clones the client repositories and runs every installed SDK against its own synthetic groups: a full consume, a reconnect with the same consumer id, a bad token, and a group that is not running.

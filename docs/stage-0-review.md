@@ -43,7 +43,7 @@ Proposed freeze (awaiting approval): **gRPC over HTTP/2 with TLS**.
 
 - Crate layout uses modules inside `diavasi` (per revised plan), not separate protocol/bench crates
 - WebTransport included despite draft status (user request)
-- Other `clients/*` languages deferred to Stage 11 (smoke-if-cheap not expanded)
+- Other client languages deferred to Stage 11 (smoke-if-cheap not expanded). They later shipped as separate repositories, indexed in [clients/README.md](../clients/README.md).
 
 ## Acceptance
 
