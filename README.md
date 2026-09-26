@@ -3,6 +3,7 @@
 [![ci](https://github.com/diavasis/diavasi/actions/workflows/ci.yml/badge.svg)](https://github.com/diavasis/diavasi/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/diavasi.svg)](https://crates.io/crates/diavasi)
 [![docs.rs](https://docs.rs/diavasi/badge.svg)](https://docs.rs/diavasi)
+[![rust](https://img.shields.io/badge/rust-1.85%2B-000000?logo=rust)](https://www.rust-lang.org)
 [![license](https://img.shields.io/github/license/diavasis/diavasi)](https://github.com/diavasis/diavasi/blob/main/LICENSE)
 
 Durable consumer groups for existing databases.
