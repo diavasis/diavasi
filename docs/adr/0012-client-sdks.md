@@ -23,7 +23,7 @@ Every SDK is a thin client of protocol v1:
 
 The native client is C, using the gRPC C stack against the same proto. The Rust client is `diavasi-client`. It is not a dependency of the server crate.
 
-From version 0.12.0 each SDK lives in its own repository under the `diavasis` org and publishes from that repository. This repository remains the source of `diavasi.data.v1`. Each client vendors `proto/data.proto` from the matching server tag. The index and install lines are in [clients/README.md](../../clients/README.md).
+Server release 0.12.0 is the first publish of the SDKs, and each SDK starts at version 0.1.0 in its own repository under the `diavasis` org. This repository remains the source of `diavasi.data.v1`. Each client vendors `proto/data.proto` from server tag `v0.12.0`. The index and install lines are in [clients/README.md](../../clients/README.md).
 
 ## Consequences
 

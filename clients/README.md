@@ -2,19 +2,19 @@
 
 Thin clients of `diavasi.data.v1`. They connect with TLS, send a bearer token, join a group, yield batches, and ack by `batch_id`. The server owns the cursor. The contract is [ADR 0012](../docs/adr/0012-client-sdks.md).
 
-Each client is its own repository at version 0.12.0. `proto/data.proto` in those repositories is the copy of [crates/diavasi/proto/data.proto](../crates/diavasi/proto/data.proto) from server tag `v0.12.0`. Push those repositories before Compose or `clients/scripts/compat.sh` can clone them.
+Each client is its own repository at version 0.1.0. That is the first publish of the libraries. `proto/data.proto` in those repositories is the copy of [crates/diavasi/proto/data.proto](../crates/diavasi/proto/data.proto) from server tag `v0.12.0`. Push those repositories before Compose or `clients/scripts/compat.sh` can clone them.
 
-| Language | Repository | Install 0.12.0 | Compose profile |
+| Language | Repository | Install 0.1.0 | Compose profile |
 | --- | --- | --- | --- |
-| Elixir | [diavasi-elixir](https://github.com/diavasis/diavasi-elixir) | Hex `{:diavasi, "~> 0.12.0"}` | `elixir` |
-| Rust | [diavasi-client](https://github.com/diavasis/diavasi-client) | crates.io `diavasi-client = "0.12.0"` | `rust` |
-| Python | [diavasi-python](https://github.com/diavasis/diavasi-python) | PyPI `pip install diavasi-data==0.12.0` | `python` |
-| Go | [diavasi-go](https://github.com/diavasis/diavasi-go) | `go get github.com/diavasis/diavasi-go@v0.12.0` | `go` |
-| JavaScript | [diavasi-js](https://github.com/diavasis/diavasi-js) | npm `npm install @diavasi/data@0.12.0` | `js` |
-| Java | [diavasi-java](https://github.com/diavasis/diavasi-java) | Maven `dev.diavasi:diavasi-data:0.12.0` | `java` |
-| C# | [diavasi-dotnet](https://github.com/diavasis/diavasi-dotnet) | NuGet `Diavasi.Data` 0.12.0 | `csharp` |
-| C | [diavasi-c](https://github.com/diavasis/diavasi-c) | git tag `v0.12.0` | `c` |
-| Zig | [diavasi-zig](https://github.com/diavasis/diavasi-zig) | git tag `v0.12.0`, submodule of `diavasi-c` | none |
+| Elixir | [diavasi-elixir](https://github.com/diavasis/diavasi-elixir) | Hex `{:diavasi, "~> 0.1.0"}` | `elixir` |
+| Rust | [diavasi-client](https://github.com/diavasis/diavasi-client) | crates.io `diavasi-client = "0.1.0"` | `rust` |
+| Python | [diavasi-python](https://github.com/diavasis/diavasi-python) | PyPI `pip install diavasi-data==0.1.0` | `python` |
+| Go | [diavasi-go](https://github.com/diavasis/diavasi-go) | `go get github.com/diavasis/diavasi-go@v0.1.0` | `go` |
+| JavaScript | [diavasi-js](https://github.com/diavasis/diavasi-js) | npm `npm install @diavasi/data@0.1.0` | `js` |
+| Java | [diavasi-java](https://github.com/diavasis/diavasi-java) | Maven `dev.diavasi:diavasi-data:0.1.0` | `java` |
+| C# | [diavasi-dotnet](https://github.com/diavasis/diavasi-dotnet) | NuGet `Diavasi.Data` 0.1.0 | `csharp` |
+| C | [diavasi-c](https://github.com/diavasis/diavasi-c) | git tag `v0.1.0` | `c` |
+| Zig | [diavasi-zig](https://github.com/diavasis/diavasi-zig) | git tag `v0.1.0`, submodule of `diavasi-c` | none |
 
 The Elixir guide shows a GenServer consumer, `Task.async/1`, Flow, GenStage, and Broadway. The Livebook is [notebooks/demo.livemd](https://github.com/diavasis/diavasi-elixir/blob/main/notebooks/demo.livemd) in that repository.
 
@@ -22,7 +22,7 @@ The Elixir guide shows a GenServer consumer, `Task.async/1`, Flow, GenStage, and
 ./clients/scripts/compat.sh
 ```
 
-That script starts `diavasi serve` with a synthetic group, clones the client repositories (tag `v0.12.0`, or the default branch until that tag exists), and runs every SDK that is installed. `DIAVASI_SDK_REQUIRE=1` fails the run when a toolchain is missing. CI uses that flag. `DIAVASI_SDK_ROOT` points the script at checkouts you already have.
+That script starts `diavasi serve` with a synthetic group, clones the client repositories (tag `v0.1.0`, or the default branch until that tag exists), and runs every SDK that is installed. `DIAVASI_SDK_REQUIRE=1` fails the run when a toolchain is missing. CI uses that flag. `DIAVASI_SDK_ROOT` points the script at checkouts you already have.
 
 ## Compose demos
 

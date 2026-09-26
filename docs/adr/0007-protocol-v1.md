@@ -32,4 +32,4 @@ Error codes: `1` bad version, `2` bad state, `3` unknown ack, `4` duplicate ack,
 
 - Clients do not compute checkpoints. They ack batch ids.
 - At-least-once replay after disconnect is the existing engine behavior.
-- SDKs in Stage 11 should speak this protocol. The Python and Elixir programs under `clients/` are compatibility clients, not those SDKs.
+- SDKs in Stage 11 speak this protocol. The Python and Elixir compatibility clients, and the later SDKs, each live in their own repository. The index is [clients/README.md](../../clients/README.md).

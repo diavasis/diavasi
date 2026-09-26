@@ -8,7 +8,7 @@
 - Protocol v1 `diavasi.data.v1` ([ADR 0007](adr/0007-protocol-v1.md))
 - `diavasi::dataplane` session mapped onto `GroupHandle` (auth, join, flow control, ack, heartbeat, leave/requeue)
 - `diavasi serve` starts the data plane next to the control plane
-- Compatibility clients: Rust (in-crate), Python (`clients/python/diavasi_data`), Elixir (`clients/elixir`)
+- Compatibility clients: Rust, Python, and Elixir. Those trees later moved to [diavasi-client](https://github.com/diavasis/diavasi-client), [diavasi-python](https://github.com/diavasis/diavasi-python), and [diavasi-elixir](https://github.com/diavasis/diavasi-elixir). The other languages are listed in [clients/README.md](../clients/README.md).
 - Tutorial: [stage-05-data-plane.md](tutorials/stage-05-data-plane.md)
 
 ## Guarantees verified

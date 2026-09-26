@@ -1,5 +1,10 @@
 # Diavasi
 
+[![ci](https://github.com/diavasis/diavasi/actions/workflows/ci.yml/badge.svg)](https://github.com/diavasis/diavasi/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/diavasi.svg)](https://crates.io/crates/diavasi)
+[![docs.rs](https://docs.rs/diavasi/badge.svg)](https://docs.rs/diavasi)
+[![license](https://img.shields.io/github/license/diavasis/diavasi)](https://github.com/diavasis/diavasi/blob/main/LICENSE)
+
 Durable consumer groups for existing databases.
 
 ## Introduction
@@ -144,15 +149,15 @@ diavasi tui
 
 A consumer opens `DataPlane.Consume`, sends `Hello` version 1, joins a group, and yields batches. The caller acks by `batch_id`. The client stores no cursor and does not dedupe on `record_id`, because that field is 0 for Redis and for some Scylla keys. Dropping the stream is how unacked batches return. Reconnect with the same consumer id and the server replays them.
 
-- [Python](https://github.com/diavasis/diavasi-python) 0.12.0, `pip install diavasi-data==0.12.0`
-- [Elixir](https://github.com/diavasis/diavasi-elixir) 0.12.0, Hex `{:diavasi, "~> 0.12.0"}`
-- [Rust](https://github.com/diavasis/diavasi-client) 0.12.0, crates.io `diavasi-client = "0.12.0"`
-- [Go](https://github.com/diavasis/diavasi-go) 0.12.0, `go get github.com/diavasis/diavasi-go@v0.12.0`
-- [JavaScript](https://github.com/diavasis/diavasi-js) 0.12.0, `npm install @diavasi/data@0.12.0`
-- [Java](https://github.com/diavasis/diavasi-java) 0.12.0, Maven `dev.diavasi:diavasi-data:0.12.0`
-- [C#](https://github.com/diavasis/diavasi-dotnet) 0.12.0, NuGet `Diavasi.Data`
-- [C](https://github.com/diavasis/diavasi-c) 0.12.0, git tag `v0.12.0`
-- [Zig](https://github.com/diavasis/diavasi-zig) 0.12.0, which calls the C library
+- [Python](https://github.com/diavasis/diavasi-python) 0.1.0, `pip install diavasi-data==0.1.0`
+- [Elixir](https://github.com/diavasis/diavasi-elixir) 0.1.0, Hex `{:diavasi, "~> 0.1.0"}`
+- [Rust](https://github.com/diavasis/diavasi-client) 0.1.0, crates.io `diavasi-client = "0.1.0"`
+- [Go](https://github.com/diavasis/diavasi-go) 0.1.0, `go get github.com/diavasis/diavasi-go@v0.1.0`
+- [JavaScript](https://github.com/diavasis/diavasi-js) 0.1.0, `npm install @diavasi/data@0.1.0`
+- [Java](https://github.com/diavasis/diavasi-java) 0.1.0, Maven `dev.diavasi:diavasi-data:0.1.0`
+- [C#](https://github.com/diavasis/diavasi-dotnet) 0.1.0, NuGet `Diavasi.Data`
+- [C](https://github.com/diavasis/diavasi-c) 0.1.0, git tag `v0.1.0`
+- [Zig](https://github.com/diavasis/diavasi-zig) 0.1.0, which calls the C library
 
 ### FAQ
 
@@ -215,7 +220,7 @@ docker compose up -d
 
 The script runs `cargo fmt`, `cargo clippy`, `cargo test`, `cargo deny`, and `cargo llvm-cov`. It keeps `DATABASE_URL`, `MONGODB_URL`, `REDIS_URL`, and `SCYLLA_URL` when those are already set, and otherwise uses the Compose URLs above so the adapter tests run. Line coverage must stay at or above 85%. The transport harness and the end-to-end bench are excluded from that number.
 
-`clients/scripts/compat.sh` starts a synthetic group, clones the 0.12.0 client repositories, and runs each SDK. CI runs that suite in the `sdks` job. `check`, `coverage`, and `deny` do not install those toolchains. Push the client repositories before that job can succeed.
+`clients/scripts/compat.sh` starts a synthetic group, clones the client repositories at `v0.1.0`, and runs each SDK. CI runs that suite in the `sdks` job. `check`, `coverage`, and `deny` do not install those toolchains. Push the client repositories before that job can succeed.
 
 The C client image builds `diavasi_consume`, joins the synthetic group `demo`, and exits. Compose then stops the server. The first build compiles the server.
 

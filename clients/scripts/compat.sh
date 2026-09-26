@@ -37,7 +37,7 @@ fetch_sdk() {
     return 0
   fi
   rm -rf "$dest"
-  if git clone --depth 1 --branch v0.12.0 "https://github.com/diavasis/${repo}.git" "$dest"; then
+  if git clone --depth 1 --branch v0.1.0 "https://github.com/diavasis/${repo}.git" "$dest"; then
     return 0
   fi
   rm -rf "$dest"

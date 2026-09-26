@@ -55,10 +55,10 @@ diavasi group start demo
 
 ## 4. Consume it
 
-Python (`diavasi-data` 0.12.0):
+Python (`diavasi-data` 0.1.0):
 
 ```bash
-pip install diavasi-data==0.12.0
+pip install diavasi-data==0.1.0
 python -m diavasi_data \
   --addr 127.0.0.1:7710 \
   --ca /tmp/diavasi-s5/dataplane-ca.crt \
@@ -68,7 +68,7 @@ python -m diavasi_data \
   --total 20
 ```
 
-Elixir (Hex `diavasi` 0.12.0, from a project that depends on it):
+Elixir (Hex `diavasi` 0.1.0, from a project that depends on it):
 
 ```bash
 mix diavasi.consume \

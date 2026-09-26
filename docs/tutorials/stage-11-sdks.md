@@ -14,15 +14,15 @@ docker compose -f clients/docker-compose.yml --profile python up --abort-on-cont
 
 Each language has its own page: the library call, the example, the errors, and the test.
 
-- [Elixir](https://github.com/diavasis/diavasi-elixir) 0.12.0
-- [Rust](https://github.com/diavasis/diavasi-client) 0.12.0
-- [Python](https://github.com/diavasis/diavasi-python) 0.12.0
-- [Go](https://github.com/diavasis/diavasi-go) 0.12.0
-- [JavaScript](https://github.com/diavasis/diavasi-js) 0.12.0
-- [Java](https://github.com/diavasis/diavasi-java) 0.12.0
-- [C#](https://github.com/diavasis/diavasi-dotnet) 0.12.0
-- [C](https://github.com/diavasis/diavasi-c) 0.12.0
-- [Zig](https://github.com/diavasis/diavasi-zig) 0.12.0, calling the C library
+- [Elixir](https://github.com/diavasis/diavasi-elixir) 0.1.0
+- [Rust](https://github.com/diavasis/diavasi-client) 0.1.0
+- [Python](https://github.com/diavasis/diavasi-python) 0.1.0
+- [Go](https://github.com/diavasis/diavasi-go) 0.1.0
+- [JavaScript](https://github.com/diavasis/diavasi-js) 0.1.0
+- [Java](https://github.com/diavasis/diavasi-java) 0.1.0
+- [C#](https://github.com/diavasis/diavasi-dotnet) 0.1.0
+- [C](https://github.com/diavasis/diavasi-c) 0.1.0
+- [Zig](https://github.com/diavasis/diavasi-zig) 0.1.0, calling the C library
 
 The index, including Compose profiles and the notebook image, is [clients/README.md](../../clients/README.md).
 
