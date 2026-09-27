@@ -21,7 +21,9 @@ impl GroupId {
     pub fn new(id: impl Into<String>) -> CoreResult<Self> {
         let id = id.into();
         if id.is_empty() {
-            return Err(CoreError::InvalidArgument("group id must be non-empty"));
+            return Err(CoreError::InvalidArgument(
+                "group id must be non-empty".into(),
+            ));
         }
         Ok(Self(id))
     }
@@ -54,7 +56,9 @@ impl ConsumerId {
     pub fn new(id: impl Into<String>) -> CoreResult<Self> {
         let id = id.into();
         if id.is_empty() {
-            return Err(CoreError::InvalidArgument("consumer id must be non-empty"));
+            return Err(CoreError::InvalidArgument(
+                "consumer id must be non-empty".into(),
+            ));
         }
         Ok(Self(id))
     }

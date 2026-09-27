@@ -1,4 +1,4 @@
-use diavasi::runtime::check_keys;
+use diavasi::runtime::parse_json;
 use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,88 +59,66 @@ pub struct SourceSpec {
     pub acknowledge_unsafe: bool,
 }
 
+/// The `source_spec` JSON as written. Checked into a [`SourceSpec`].
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawSpec {
+    table: String,
+    order_by: Vec<RawOrderCol>,
+    #[serde(default)]
+    payload: Vec<String>,
+    #[serde(default)]
+    filter: Option<String>,
+    #[serde(default)]
+    acknowledge_unsafe: Option<bool>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawOrderCol {
+    column: String,
+    #[serde(rename = "type")]
+    ty: String,
+}
+
 impl SourceSpec {
     pub fn parse(value: &Value) -> Result<Self, String> {
-        check_keys(
-            value,
-            &[
-                "table",
-                "order_by",
-                "payload",
-                "filter",
-                "acknowledge_unsafe",
-            ],
-            "source_spec",
-        )?;
-        let table = value
-            .get("table")
-            .and_then(|v| v.as_str())
-            .ok_or("source_spec.table is required")?;
-        let (schema, table) = split_table(table)?;
-        let order_by = value
-            .get("order_by")
-            .and_then(|v| v.as_array())
-            .ok_or("source_spec.order_by is required")?;
-        if order_by.is_empty() {
+        let raw: RawSpec = parse_json(value, "source_spec")?;
+        let (schema, table) = split_table(&raw.table)?;
+        if raw.order_by.is_empty() {
             return Err("source_spec.order_by must be non-empty".into());
         }
-        let mut cols = Vec::new();
-        for col in order_by {
-            check_keys(col, &["column", "type"], "order_by entry")?;
-            let name = col
-                .get("column")
-                .and_then(|v| v.as_str())
-                .ok_or("order_by.column is required")?;
-            let ty = col
-                .get("type")
-                .and_then(|v| v.as_str())
-                .ok_or("order_by.type is required")?;
-            check_ident(name)?;
-            cols.push(OrderCol {
-                name: name.to_string(),
-                ty: ColType::parse(ty)?,
-            });
-        }
-        let payload = match value.get("payload") {
-            Some(Value::Array(items)) => items
-                .iter()
-                .map(|item| {
-                    let name = item.as_str().ok_or("payload entries must be strings")?;
-                    check_ident(name)?;
-                    Ok(name.to_string())
+        let order_by = raw
+            .order_by
+            .into_iter()
+            .map(|col| {
+                check_ident(&col.column)?;
+                Ok(OrderCol {
+                    name: col.column,
+                    ty: ColType::parse(&col.ty)?,
                 })
-                .collect::<Result<Vec<_>, String>>()?,
-            Some(_) => return Err("source_spec.payload must be an array".into()),
-            None => Vec::new(),
-        };
-        if payload.is_empty() {
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        if raw.payload.is_empty() {
             return Err("source_spec.payload must list at least one column".into());
         }
-        let filter = match value.get("filter") {
-            None | Some(Value::Null) => None,
-            Some(Value::String(raw)) => {
-                let trimmed = raw.trim();
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    check_filter(trimmed)?;
-                    Some(trimmed.to_string())
-                }
+        for name in &raw.payload {
+            check_ident(name)?;
+        }
+        let filter = match raw.filter.as_deref().map(str::trim) {
+            None | Some("") => None,
+            Some(trimmed) => {
+                check_filter(trimmed)?;
+                Some(trimmed.to_string())
             }
-            Some(_) => return Err("source_spec.filter must be a string".into()),
-        };
-        let acknowledge_unsafe = match value.get("acknowledge_unsafe") {
-            None | Some(Value::Null) => false,
-            Some(Value::Bool(flag)) => *flag,
-            Some(_) => return Err("source_spec.acknowledge_unsafe must be a bool".into()),
         };
         Ok(Self {
             schema,
             table,
-            order_by: cols,
-            payload,
+            order_by,
+            payload: raw.payload,
             filter,
-            acknowledge_unsafe,
+            acknowledge_unsafe: raw.acknowledge_unsafe.unwrap_or(false),
         })
     }
 
@@ -272,7 +250,7 @@ mod tests {
         assert!(
             spec(json!({"payload": "body"}))
                 .unwrap_err()
-                .contains("array")
+                .contains("sequence")
         );
         assert!(
             spec(json!({"payload": []}))

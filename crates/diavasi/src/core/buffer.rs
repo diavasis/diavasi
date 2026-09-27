@@ -26,7 +26,9 @@ impl BoundedBuffer {
     /// An empty buffer. Both caps must be at least 1.
     pub fn new(max_records: usize, max_bytes: usize) -> CoreResult<Self> {
         if max_records == 0 || max_bytes == 0 {
-            return Err(CoreError::InvalidArgument("buffer caps must be non-zero"));
+            return Err(CoreError::InvalidArgument(format!(
+                "buffer caps must be non-zero: max_records={max_records}, max_bytes={max_bytes}"
+            )));
         }
         Ok(Self {
             records: std::collections::VecDeque::new(),

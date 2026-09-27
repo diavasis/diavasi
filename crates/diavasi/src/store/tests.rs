@@ -773,3 +773,40 @@ fn regress_b09_commit_after_delete_does_not_resurrect_the_group() {
     );
     assert!(store.get_group(&gid).unwrap().is_none(), "group came back");
 }
+
+/// G8: a backup holds every connection, group, and checkpoint, opens as a
+/// store, and refuses to overwrite a file.
+#[test]
+fn backup_copies_everything_and_never_overwrites() {
+    let (dir, store) = temp_store();
+    let key = StoreKey::generate();
+    store
+        .put_connection(&ConnectionRecord {
+            id: "c1".into(),
+            kind: "postgres".into(),
+            config_json: serde_json::json!({"host": "db"}),
+            sealed_secret: seal_secret(&key, b"pw").unwrap(),
+        })
+        .unwrap();
+    let mut g =
+        DurableGroup::create(Arc::clone(&store), cfg("g1", 4, 4, 2), "synthetic-u64").unwrap();
+    g.start().unwrap();
+    let c = ConsumerId::new("c").unwrap();
+    g.join_consumer(c.clone()).unwrap();
+    g.poll_fetch().unwrap();
+    let batch = g.assign_batch(&c).unwrap();
+    g.ack(batch.id).unwrap();
+
+    let path = dir.path().join("backup.redb");
+    let summary = store.backup_to(&path).unwrap();
+    assert_eq!((summary.connections, summary.groups), (1, 1));
+    let copy = RedbStore::open(&path).unwrap();
+    let gid = GroupId::new("g1").unwrap();
+    assert_eq!(
+        copy.load_checkpoint(&gid).unwrap(),
+        Some(OrderingValue::single_u64(2))
+    );
+    let conn = copy.get_connection("c1").unwrap().unwrap();
+    assert_eq!(open_secret(&key, &conn.sealed_secret).unwrap(), b"pw");
+    assert!(store.backup_to(&path).is_err(), "backup overwrote a file");
+}

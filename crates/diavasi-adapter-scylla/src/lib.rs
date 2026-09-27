@@ -14,7 +14,8 @@
 //!     source_factory: Some(Arc::new(diavasi_adapter_scylla::ScyllaFactory)),
 //!     ..config
 //! })
-//! .await
+//! .await?;
+//! # Ok(())
 //! # }
 //! ```
 //!

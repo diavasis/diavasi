@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted for Stage 10 onward.
+Accepted in v0.10.0.
 
 ## Context
 

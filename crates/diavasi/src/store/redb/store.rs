@@ -10,6 +10,15 @@ use crate::store::types::{CheckpointRecord, ConnectionRecord, GroupRecord};
 
 use super::keys::{CHECKPOINTS, CONNECTIONS, GROUPS, META, SCHEMA_VERSION, SCHEMA_VERSION_KEY};
 
+/// What [`RedbStore::backup_to`] copied.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BackupSummary {
+    /// Connections copied.
+    pub connections: usize,
+    /// Groups copied, each with its checkpoint.
+    pub groups: usize,
+}
+
 /// redb-backed [`StateStore`].
 #[derive(Clone)]
 pub struct RedbStore {
@@ -17,7 +26,7 @@ pub struct RedbStore {
 }
 
 impl RedbStore {
-    /// Create a store file at `path`, replacing none: fails when it cannot be created.
+    /// Create a store file at `path`. Fails when it cannot be created.
     pub fn create(path: impl AsRef<Path>) -> StoreResult<Self> {
         let db = Database::create(path.as_ref())?;
         let store = Self { db: Arc::new(db) };
@@ -80,6 +89,62 @@ impl RedbStore {
             }
         }
         Ok(())
+    }
+
+    /// Write a consistent copy of the store to `path`, which must not exist.
+    /// Everything is read in one read transaction, so the server keeps
+    /// running and writing while the copy is made. The copy opens with
+    /// [`RedbStore::open`] and needs the same store key for its secrets.
+    ///
+    /// ```
+    /// use diavasi::store::{RedbStore, StateStore};
+    /// let dir = tempfile::tempdir()?;
+    /// let store = RedbStore::create(dir.path().join("meta.redb"))?;
+    /// let summary = store.backup_to(dir.path().join("backup.redb"))?;
+    /// assert_eq!(summary.groups, 0);
+    /// let copy = RedbStore::open(dir.path().join("backup.redb"))?;
+    /// assert!(copy.list_groups()?.is_empty());
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn backup_to(&self, path: impl AsRef<Path>) -> StoreResult<BackupSummary> {
+        let path = path.as_ref();
+        if path.exists() {
+            return Err(StoreError::Io(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!("{} already exists", path.display()),
+            )));
+        }
+        let read = self.db.begin_read()?;
+        let target = Database::create(path)?;
+        let write = target.begin_write()?;
+        let mut summary = BackupSummary::default();
+        {
+            let meta = read.open_table(META)?;
+            let mut copy = write.open_table(META)?;
+            for item in meta.iter()? {
+                let (key, value) = item?;
+                copy.insert(key.value(), value.value())?;
+            }
+            for (table, count) in [
+                (CONNECTIONS, Some(&mut summary.connections)),
+                (GROUPS, Some(&mut summary.groups)),
+                (CHECKPOINTS, None),
+            ] {
+                let source = read.open_table(table)?;
+                let mut copy = write.open_table(table)?;
+                let mut rows = 0;
+                for item in source.iter()? {
+                    let (key, value) = item?;
+                    copy.insert(key.value(), value.value())?;
+                    rows += 1;
+                }
+                if let Some(count) = count {
+                    *count = rows;
+                }
+            }
+        }
+        write.commit()?;
+        Ok(summary)
     }
 
     fn encode<T: serde::Serialize>(value: &T) -> StoreResult<Vec<u8>> {

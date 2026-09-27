@@ -43,9 +43,9 @@ pub struct ConnectionView {
 /// `POST /v1/groups`.
 ///
 /// ```json
-/// {"group_id": "orders", "total_records": 0, "payload_size": 0,
+/// {"group_id": "orders",
 ///  "max_buffer_records": 4096, "max_buffer_bytes": 8388608, "batch_max_records": 200,
-///  "batch_timeout_ms": 30000, "ordering_contract": "postgres-keyset",
+///  "batch_timeout_ms": 30000,
 ///  "connection_id": "pg-main",
 ///  "source_spec": {"table": "app.orders", "order_by": [{"column": "id", "type": "int8"}], "payload": ["id", "total"]}}
 /// ```
@@ -53,9 +53,13 @@ pub struct ConnectionView {
 pub struct GroupCreateRequest {
     /// Group id: 1 to 128 characters from `A-Z a-z 0-9 . _ - :`.
     pub group_id: String,
-    /// Synthetic groups only: number of records. 0 for adapter groups.
+    /// Synthetic groups only: number of records. Omit, or 0, for an adapter
+    /// group.
+    #[serde(default)]
     pub total_records: u64,
-    /// Synthetic groups only: payload bytes per record.
+    /// Synthetic groups only: payload bytes per record. Omit, or 0, for an
+    /// adapter group.
+    #[serde(default)]
     pub payload_size: usize,
     /// Most records the buffer holds. At least 1.
     pub max_buffer_records: usize,
@@ -67,7 +71,10 @@ pub struct GroupCreateRequest {
     /// least 100.
     pub batch_timeout_ms: u64,
     /// A free-text label for the ordering, such as `postgres-keyset`. At most
-    /// 1024 bytes. Stored and shown; not interpreted.
+    /// 1024 bytes. Stored and shown; not interpreted. Empty or omitted means
+    /// `synthetic-u64` for a synthetic group and the connection kind for an
+    /// adapter group.
+    #[serde(default)]
     pub ordering_contract: String,
     /// Optional connection this group reads. Omit for a synthetic group.
     #[serde(default)]
@@ -221,6 +228,32 @@ pub struct DiagnosticsView {
     pub last_stop_reason: Option<String>,
     /// True after the supervisor restarted the group in this process.
     pub recovered: bool,
+}
+
+/// `POST /v1/store/backup`.
+///
+/// ```json
+/// {"path": "/var/backups/diavasi/meta-2026-09-27.redb"}
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackupRequest {
+    /// Absolute path on the server for the copy. It must not exist.
+    pub path: String,
+}
+
+/// What a backup wrote.
+///
+/// ```json
+/// {"path": "/var/backups/diavasi/meta-2026-09-27.redb", "connections": 2, "groups": 5}
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackupView {
+    /// Where the copy was written.
+    pub path: String,
+    /// Connections copied.
+    pub connections: usize,
+    /// Groups copied, each with its checkpoint.
+    pub groups: usize,
 }
 
 /// The body of every error response.

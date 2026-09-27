@@ -305,56 +305,114 @@ async fn missing_routes_use_error_responses() {
 }
 
 #[tokio::test]
-async fn serve_writes_certs_and_rejects_a_taken_data_port() {
-    use std::net::SocketAddr;
-
-    use crate::control::{ServeConfig, serve};
+async fn serve_rejects_a_taken_port_and_half_set_tls_flags() {
+    use crate::control::{ServeConfig, ServeError, serve_until};
 
     let dir = tempdir().unwrap();
-    let err = serve(ServeConfig {
-        bind: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
-        data_bind: "127.0.0.1:0".parse().unwrap(),
-        store_path: dir.path().join("meta.redb"),
-        api_token: "tok".into(),
-        store_key: None,
-        tls_cert: Some(dir.path().join("only-cert.pem")),
-        tls_key: None,
-        source_factory: None,
-        checkpoint_interval: std::time::Duration::ZERO,
-    })
-    .await
-    .unwrap_err();
+    let mut half = ServeConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        "127.0.0.1:0".parse().unwrap(),
+        dir.path().join("meta.redb"),
+        "tok",
+    );
+    half.store_key = Some(StoreKey::generate());
+    half.tls_cert = Some(dir.path().join("only-cert.pem"));
+    let err = serve_until(half, std::future::pending()).await.unwrap_err();
+    assert!(matches!(err, ServeError::Config(_)), "{err}");
     assert!(err.to_string().contains("together"));
 
-    let hold = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let data_bind = hold.local_addr().unwrap();
-    let control = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let bind = control.local_addr().unwrap();
-    drop(control);
+    let hold = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut taken = ServeConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        hold.local_addr().unwrap(),
+        dir.path().join("meta.redb"),
+        "tok",
+    );
+    taken.store_key = Some(StoreKey::generate());
+    let err = serve_until(taken, std::future::pending())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ServeError::Bind { .. }), "{err}");
+}
 
+#[tokio::test]
+async fn serve_writes_certs_next_to_the_store_and_reuses_them() {
+    use crate::control::{Listeners, ServeConfig, serve_on};
+
+    let dir = tempdir().unwrap();
     let store = dir.path().join("nested").join("meta.redb");
-    let config = ServeConfig {
-        bind,
-        data_bind,
-        store_path: store.clone(),
-        api_token: "tok".into(),
-        store_key: Some(StoreKey::generate()),
-        tls_cert: None,
-        tls_key: None,
-        source_factory: None,
-        checkpoint_interval: std::time::Duration::ZERO,
+    let mut config = ServeConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        "127.0.0.1:0".parse().unwrap(),
+        store.clone(),
+        "tok",
+    );
+    config.store_key = Some(StoreKey::generate());
+    let run = |config: ServeConfig| async move {
+        let listeners = Listeners::bind(config.bind, config.data_bind).unwrap();
+        serve_on(config, listeners, async {}).await
     };
-    let err = serve(config.clone()).await.unwrap_err();
-    assert!(store.exists(), "{err}");
-    assert!(store.parent().unwrap().join("dataplane-ca.crt").exists());
-    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    run(config.clone()).await.unwrap();
+    let certs = store.parent().unwrap();
+    assert!(store.exists());
+    assert!(certs.join("dataplane-ca.crt").exists());
+    let first = std::fs::read(certs.join("dataplane.crt")).unwrap();
 
     let mut with_tls = config.clone();
-    with_tls.tls_cert = Some(store.parent().unwrap().join("dataplane.crt"));
-    with_tls.tls_key = Some(store.parent().unwrap().join("dataplane.key"));
-    let err = serve(with_tls).await.unwrap_err();
-    let _ = err;
-    drop(hold);
+    with_tls.tls_cert = Some(certs.join("dataplane.crt"));
+    with_tls.tls_key = Some(certs.join("dataplane.key"));
+    run(with_tls).await.unwrap();
+    run(config).await.unwrap();
+    assert_eq!(std::fs::read(certs.join("dataplane.crt")).unwrap(), first);
+}
+
+/// G5 and G6: the control plane serves HTTPS with an operator certificate,
+/// and a generated certificate covers the extra names it was given.
+#[tokio::test]
+async fn control_plane_serves_https_for_an_extra_name() {
+    use crate::control::{Listeners, ServeConfig, serve_on};
+
+    let dir = tempdir().unwrap();
+    let (ca, cert, key) = crate::dataplane::generate_self_signed(&["diavasi.test".into()]).unwrap();
+    std::fs::write(dir.path().join("http.crt"), &cert).unwrap();
+    std::fs::write(dir.path().join("http.key"), &key).unwrap();
+    let mut config = ServeConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        "127.0.0.1:0".parse().unwrap(),
+        dir.path().join("meta.redb"),
+        "tok",
+    );
+    config.store_key = Some(StoreKey::generate());
+    config.http_tls_cert = Some(dir.path().join("http.crt"));
+    config.http_tls_key = Some(dir.path().join("http.key"));
+    let listeners = Listeners::bind(config.bind, config.data_bind).unwrap();
+    let addr = listeners.control_addr();
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let server = tokio::spawn(serve_on(config, listeners, async {
+        let _ = stopped.await;
+    }));
+
+    let client = reqwest::Client::builder()
+        .add_root_certificate(reqwest::Certificate::from_pem(ca.as_bytes()).unwrap())
+        .resolve("diavasi.test", addr)
+        .build()
+        .unwrap();
+    let url = format!("https://diavasi.test:{}/health", addr.port());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let body = loop {
+        match client.get(&url).send().await {
+            Ok(response) => break response.text().await.unwrap(),
+            Err(err) => {
+                assert!(Instant::now() < deadline, "no HTTPS answer: {err}");
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }
+    };
+    assert_eq!(body, "ok");
+    let plain = reqwest::get(format!("http://{addr}/health")).await;
+    assert!(plain.is_err() || !plain.unwrap().status().is_success());
+    stop.send(()).unwrap();
+    server.await.unwrap().unwrap();
 }
 
 // Regression tests for the v0.12.0 review. Each name carries its finding id.
@@ -425,6 +483,7 @@ async fn with_test_connection(state: &AppState, open_delay: Duration) {
 
 fn adapter_group(id: &str) -> GroupCreateRequest {
     GroupCreateRequest {
+        payload_size: 0,
         connection_id: Some("conn".into()),
         source_spec: Some(serde_json::json!({})),
         ..synthetic_group(id, 0, 8, 2)
@@ -665,6 +724,9 @@ async fn regress_b06_missing_tls_files_are_an_error() {
             tls_key: Some(key.clone()),
             source_factory: None,
             checkpoint_interval: std::time::Duration::ZERO,
+            tls_san: Vec::new(),
+            http_tls_cert: None,
+            http_tls_key: None,
         }),
     )
     .await;
@@ -715,6 +777,9 @@ async fn regress_b11_store_with_secrets_rejects_a_wrong_key() {
                 tls_key: None,
                 source_factory: None,
                 checkpoint_interval: std::time::Duration::ZERO,
+                tls_san: Vec::new(),
+                http_tls_cert: None,
+                http_tls_key: None,
             }),
         )
         .await;
@@ -729,7 +794,7 @@ async fn regress_b11_store_with_secrets_rejects_a_wrong_key() {
 /// the next start resumes the group.
 #[tokio::test]
 async fn regress_g01_shutdown_keeps_groups_and_boot_resumes_them() {
-    use crate::control::{ServeConfig, serve_until};
+    use crate::control::{Listeners, ServeConfig, serve_on};
     use crate::core::GroupLifecycle;
 
     let dir = tempdir().unwrap();
@@ -745,10 +810,16 @@ async fn regress_g01_shutdown_keeps_groups_and_boot_resumes_them() {
         tls_key: None,
         source_factory: None,
         checkpoint_interval: std::time::Duration::ZERO,
+        tls_san: Vec::new(),
+        http_tls_cert: None,
+        http_tls_key: None,
     };
-    let free_addr = || {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.local_addr().unwrap()
+    let bind = || {
+        Listeners::bind(
+            "127.0.0.1:0".parse().unwrap(),
+            "127.0.0.1:0".parse().unwrap(),
+        )
+        .unwrap()
     };
     let http = reqwest::Client::new();
     let call = |method: reqwest::Method, url: String, body: Option<serde_json::Value>| {
@@ -771,10 +842,11 @@ async fn regress_g01_shutdown_keeps_groups_and_boot_resumes_them() {
         }
     };
 
-    let addr = free_addr();
+    let listeners = bind();
+    let addr = listeners.control_addr();
     let base = format!("http://{addr}");
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-    let server = tokio::spawn(serve_until(config(addr), async {
+    let server = tokio::spawn(serve_on(config(addr), listeners, async {
         let _ = stopped.await;
     }));
     wait_up(base.clone()).await;
@@ -809,10 +881,11 @@ async fn regress_g01_shutdown_keeps_groups_and_boot_resumes_them() {
         assert_eq!(group.lifecycle, GroupLifecycle::Running);
     }
 
-    let addr = free_addr();
+    let listeners = bind();
+    let addr = listeners.control_addr();
     let base = format!("http://{addr}");
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-    let server = tokio::spawn(serve_until(config(addr), async {
+    let server = tokio::spawn(serve_on(config(addr), listeners, async {
         let _ = stopped.await;
     }));
     wait_up(base.clone()).await;
@@ -825,4 +898,81 @@ async fn regress_g01_shutdown_keeps_groups_and_boot_resumes_them() {
         .expect("serve did not stop")
         .unwrap()
         .unwrap();
+}
+
+/// G8: `POST /v1/store/backup` writes a copy at an absolute path and refuses
+/// a relative or existing one.
+#[tokio::test]
+async fn backup_route_writes_a_copy() {
+    let (dir, state) = test_state("tok");
+    let path = dir.path().join("copy.redb");
+    let body = |path: &str| serde_json::json!({ "path": path }).to_string();
+    let post = |json: String| {
+        let state = state.clone();
+        async move {
+            oneshot(
+                state,
+                auth_json("POST", "/v1/store/backup", "tok", Some(&json)),
+            )
+            .await
+        }
+    };
+    let (status, resp) = post(body(path.to_str().unwrap())).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&resp));
+    assert!(path.exists());
+    let (status, _) = post(body(path.to_str().unwrap())).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let (status, _) = post(body("relative.redb")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+/// S5: adapter groups do not take the synthetic fields, and the ordering
+/// label defaults to `synthetic-u64` or the connection kind.
+#[tokio::test]
+async fn synthetic_fields_are_optional_and_rejected_for_adapter_groups() {
+    let (_dir, state) = test_state("tok");
+    with_test_connection(&state, Duration::ZERO).await;
+    let minimal = serde_json::json!({
+        "group_id": "a", "max_buffer_records": 8, "max_buffer_bytes": 1024,
+        "batch_max_records": 2, "batch_timeout_ms": 1000,
+        "connection_id": "conn", "source_spec": {}
+    })
+    .to_string();
+    let (status, body) = oneshot(
+        state.clone(),
+        auth_json("POST", "/v1/groups", "tok", Some(&minimal)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let view: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(view["ordering_contract"], "test");
+
+    let mut with_synthetic: serde_json::Value = serde_json::from_str(&minimal).unwrap();
+    with_synthetic["group_id"] = "b".into();
+    with_synthetic["total_records"] = 10.into();
+    let (status, _) = oneshot(
+        state.clone(),
+        auth_json(
+            "POST",
+            "/v1/groups",
+            "tok",
+            Some(&with_synthetic.to_string()),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let synthetic = serde_json::json!({
+        "group_id": "s", "total_records": 5, "max_buffer_records": 8,
+        "max_buffer_bytes": 1024, "batch_max_records": 2, "batch_timeout_ms": 1000
+    })
+    .to_string();
+    let (status, body) = oneshot(
+        state,
+        auth_json("POST", "/v1/groups", "tok", Some(&synthetic)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let view: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(view["ordering_contract"], "synthetic-u64");
 }

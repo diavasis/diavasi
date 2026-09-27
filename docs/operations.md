@@ -27,7 +27,7 @@ The running group writes its lifecycle to the store. When the server starts, gro
 | `shutdown` | The server stopped cleanly. | The group starts with the server. |
 | `task aborted`, `task panicked` | The group task died. | The supervisor restarts it. A panic is a bug; report it with the logs. |
 | A connection or timeout message | The source could not be reached (transient). | The supervisor restarts it with growing delays; fix the database or network. |
-| A data message, such as a wrong type, an undecodable value, a record not after the cursor, or `trimmed past the committed cursor` | The data broke the source contract. The lifecycle is `Failed`. | Fix the data or the `source_spec`, then `group start`. Restarting reads the same data and fails again. |
+| A data message, such as a wrong type, an undecodable value, a record not after the cursor, or `trimmed past the committed cursor` | The data broke the source contract. The lifecycle is `Failed`, and `diavasi_group_contract_failures_total` goes up. | Fix the data or the `source_spec`, then `group start`. Restarting reads the same data and fails again. |
 
 ## Restarts
 
@@ -65,13 +65,18 @@ Consumers per group and groups per process are not capped.
 ## Security
 
 - One bearer token protects `/v1`, `/metrics`, and the data plane. Anyone with it can create connections, read diagnostics, and consume every group.
-- The control plane is plain HTTP. Bind it to localhost, or put a TLS proxy in front, when it is reachable from other hosts.
-- The data plane is TLS. Without `--tls-cert` and `--tls-key`, the server generates a local CA (`dataplane-ca.crt`), a certificate for `localhost` and `127.0.0.1`, and a key readable only by its owner, next to the store. Clients trust `dataplane-ca.crt`. Remote clients connect through a name in the certificate, or use a certificate of your own.
+- The control plane is plain HTTP unless `--http-tls-cert` and `--http-tls-key` are given; then it is HTTPS only. Without them, bind it to localhost or put a TLS proxy in front when it is reachable from other hosts. The bearer token travels in every request, so do not send it over plain HTTP across a network.
+- The data plane is TLS. Without `--tls-cert` and `--tls-key`, the server generates a local CA (`dataplane-ca.crt`), a certificate for `localhost` and `127.0.0.1`, and a key readable only by its owner, next to the store. Clients trust `dataplane-ca.crt`. `--tls-san <name-or-ip>` (repeatable) adds names to a newly generated certificate, so remote clients can connect by that name; an existing certificate is reused as is, so delete `dataplane.crt` and `dataplane.key` to regenerate it with new names. Or use a certificate of your own.
+- `diavasi connection add` takes the secret from `--secret-file <path>`, `--secret-stdin`, or `DIAVASI_CONNECTION_SECRET`, which keep it out of the process list and shell history. `--secret <value>` still works.
 - Connection secrets are sealed with ChaCha20-Poly1305 under the store key. `config_json`, group definitions, and cursors are not encrypted.
 - The store key is 32 bytes as 64 hex characters (`DIAVASI_STORE_KEY` or `--store-key`). The server refuses to start without it when the store holds a connection, and refuses a key that cannot open the stored secrets. There is no key rotation: to change the key, delete and recreate the connections.
 
 ## Backup and upgrade
 
-The state is the store file (`--store`), the data-plane TLS files next to it, and the store key. Stop the server (SIGTERM) before copying the store file; redb allows one writer and the copy of a running store may be torn. Keep the key with the backup and apart from it: without the key the connection secrets cannot be opened.
+The state is the store file (`--store`), the data-plane TLS files next to it, and the store key.
+
+A running server copies its store with `diavasi store backup <absolute path>` (`POST /v1/store/backup`). The path is on the server host and must not exist. The copy is consistent and groups keep running while it is taken. To restore, stop the server and start it with `--store` pointing at the copy and the same store key.
+
+Without the API, stop the server (SIGTERM) before copying the store file; redb allows one writer and a copy of a running store may be torn. Keep the key apart from the backup: without the key the connection secrets cannot be opened.
 
 The store records a schema version. A server refuses a store with a version it does not support, newer or older; this release reads version 1.

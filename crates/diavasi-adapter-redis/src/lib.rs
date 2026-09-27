@@ -13,7 +13,8 @@
 //!     source_factory: Some(Arc::new(diavasi_adapter_redis::RedisFactory)),
 //!     ..config
 //! })
-//! .await
+//! .await?;
+//! # Ok(())
 //! # }
 //! ```
 //!

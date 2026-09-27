@@ -6,7 +6,7 @@ use diavasi::control::{ConnectionCreateRequest, ControlService, GroupCreateReque
 use diavasi::core::{ConsumerId, GroupId, OrderingAtom, RecordSource};
 use diavasi::dataplane::{
     ConsumerClient, ConsumerOptions, DataPlaneConfig, SharedProgress, generate_self_signed,
-    serve_dataplane,
+    serve_dataplane_on,
 };
 use diavasi::runtime::RuntimeError;
 use diavasi::store::{RedbStore, StateStore, StoreKey};
@@ -162,7 +162,7 @@ impl Lab {
             .create_group(GroupCreateRequest {
                 group_id: id.into(),
                 total_records: 0,
-                payload_size: 1,
+                payload_size: 0,
                 max_buffer_records: 256,
                 max_buffer_bytes: 8 * 1024 * 1024,
                 batch_max_records: batch,
@@ -239,7 +239,7 @@ async fn unsupported_kind_is_rejected_before_connect() {
         .create_group(GroupCreateRequest {
             group_id: "g".into(),
             total_records: 0,
-            payload_size: 1,
+            payload_size: 0,
             max_buffer_records: 8,
             max_buffer_bytes: 1024,
             batch_max_records: 1,
@@ -394,7 +394,7 @@ async fn missing_stream_and_wrong_type_are_rejected() {
         .create_group(GroupCreateRequest {
             group_id: "missing".into(),
             total_records: 0,
-            payload_size: 1,
+            payload_size: 0,
             max_buffer_records: 8,
             max_buffer_bytes: 1024,
             batch_max_records: 1,
@@ -413,7 +413,7 @@ async fn missing_stream_and_wrong_type_are_rejected() {
         .create_group(GroupCreateRequest {
             group_id: "typed".into(),
             total_records: 0,
-            payload_size: 1,
+            payload_size: 0,
             max_buffer_records: 8,
             max_buffer_bytes: 1024,
             batch_max_records: 1,
@@ -494,21 +494,23 @@ async fn data_plane_consumes_stream_entries() {
         lab.xadd(id, body).await;
     }
     lab.group("g", lab.spec(serde_json::json!({})), 4).await;
-    let (ca, cert, key) = generate_self_signed().unwrap();
+    let (ca, cert, key) = generate_self_signed(&[]).unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    drop(listener);
     let supervisor = lab.service.supervisor();
     tokio::spawn(async move {
-        let _ = serve_dataplane(DataPlaneConfig {
-            bind: addr,
-            tls_cert_pem: cert.into_bytes(),
-            tls_key_pem: key.into_bytes(),
-            api_token: "tok".into(),
-            supervisor,
-            heartbeat_interval: Duration::from_secs(30),
-            heartbeat_timeout: Duration::from_secs(30),
-        })
+        let _ = serve_dataplane_on(
+            DataPlaneConfig {
+                bind: addr,
+                tls_cert_pem: cert.into_bytes(),
+                tls_key_pem: key.into_bytes(),
+                api_token: "tok".into(),
+                supervisor,
+                heartbeat_interval: Duration::from_secs(30),
+                heartbeat_timeout: Duration::from_secs(30),
+            },
+            listener,
+        )
         .await;
     });
     tokio::time::sleep(Duration::from_millis(50)).await;

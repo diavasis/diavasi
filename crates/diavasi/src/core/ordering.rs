@@ -58,7 +58,7 @@ impl OrderingValue {
     pub fn new(atoms: Vec<OrderingAtom>) -> CoreResult<Self> {
         if atoms.is_empty() {
             return Err(CoreError::InvalidArgument(
-                "ordering tuple must be non-empty",
+                "ordering tuple must be non-empty".into(),
             ));
         }
         Ok(Self(atoms))

@@ -14,7 +14,7 @@ pub type CoreResult<T> = Result<T, CoreError>;
 pub enum CoreError {
     /// An argument was out of range, such as an empty id or a zero cap.
     #[error("invalid argument: {0}")]
-    InvalidArgument(&'static str),
+    InvalidArgument(String),
     /// The lifecycle cannot move from `from` to `to`, for example a drain of a stopped group.
     #[error("invalid lifecycle transition from {from:?} to {to:?}")]
     InvalidTransition {

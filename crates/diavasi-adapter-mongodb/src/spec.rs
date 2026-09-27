@@ -1,5 +1,5 @@
 use diavasi::core::encoding;
-use diavasi::runtime::check_keys;
+use diavasi::runtime::parse_json;
 use mongodb::bson::{Document, doc};
 use serde_json::Value;
 
@@ -90,70 +90,74 @@ pub struct SourceSpec {
     pub acknowledge_unsafe: bool,
 }
 
+/// The `source_spec` JSON as written. Checked into a [`SourceSpec`].
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawSpec {
+    collection: String,
+    #[serde(default)]
+    order_by: Option<Vec<RawOrderField>>,
+    #[serde(default)]
+    fields: Option<Vec<String>>,
+    #[serde(default)]
+    filter: Option<serde_json::Map<String, Value>>,
+    #[serde(default)]
+    acknowledge_unsafe: Option<bool>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawOrderField {
+    field: String,
+    #[serde(rename = "type")]
+    ty: String,
+    direction: String,
+}
+
 impl SourceSpec {
     pub fn parse(value: &Value) -> Result<Self, String> {
-        check_keys(
-            value,
-            &[
-                "collection",
-                "order_by",
-                "fields",
-                "filter",
-                "acknowledge_unsafe",
-            ],
-            "source_spec",
-        )?;
-        let collection = value
-            .get("collection")
-            .and_then(|v| v.as_str())
-            .ok_or("source_spec.collection is required")?;
-        check_collection(collection)?;
-        let order_by = match value.get("order_by") {
+        let raw: RawSpec = parse_json(value, "source_spec")?;
+        check_collection(&raw.collection)?;
+        let order_by = match raw.order_by {
             None => vec![OrderField {
                 field: "_id".into(),
                 ty: FieldType::ObjectId,
                 direction: Direction::Asc,
             }],
-            Some(Value::Array(items)) if items.is_empty() => {
+            Some(items) if items.is_empty() => {
                 return Err("source_spec.order_by must be non-empty".into());
             }
-            Some(Value::Array(items)) => items.iter().map(parse_order).collect::<Result<_, _>>()?,
-            Some(_) => return Err("source_spec.order_by must be an array".into()),
+            Some(items) => items
+                .into_iter()
+                .map(|item| {
+                    check_field(&item.field)?;
+                    Ok(OrderField {
+                        field: item.field,
+                        ty: FieldType::parse(&item.ty)?,
+                        direction: Direction::parse(&item.direction)?,
+                    })
+                })
+                .collect::<Result<_, String>>()?,
         };
-        let fields = match value.get("fields") {
-            None | Some(Value::Null) => None,
-            Some(Value::Array(items)) => {
-                let mut names = Vec::new();
-                for item in items {
-                    let name = item.as_str().ok_or("fields entries must be strings")?;
-                    check_field(name)?;
-                    names.push(name.to_string());
-                }
-                Some(names)
+        if let Some(names) = &raw.fields {
+            for name in names {
+                check_field(name)?;
             }
-            Some(_) => return Err("source_spec.fields must be an array".into()),
-        };
-        let filter = match value.get("filter") {
-            None | Some(Value::Null) => None,
-            Some(other) => {
-                if !other.is_object() {
-                    return Err("source_spec.filter must be an object".into());
-                }
-                reject_filter_ops(other)?;
-                Some(mongodb::bson::to_document(other).map_err(|err| err.to_string())?)
+        }
+        let filter = match raw.filter {
+            None => None,
+            Some(map) => {
+                let filter = Value::Object(map);
+                reject_filter_ops(&filter)?;
+                Some(mongodb::bson::to_document(&filter).map_err(|err| err.to_string())?)
             }
-        };
-        let acknowledge_unsafe = match value.get("acknowledge_unsafe") {
-            None | Some(Value::Null) => false,
-            Some(Value::Bool(flag)) => *flag,
-            Some(_) => return Err("source_spec.acknowledge_unsafe must be a bool".into()),
         };
         Ok(Self {
-            collection: collection.to_string(),
+            collection: raw.collection,
             order_by,
-            fields,
+            fields: raw.fields,
             filter,
-            acknowledge_unsafe,
+            acknowledge_unsafe: raw.acknowledge_unsafe.unwrap_or(false),
         })
     }
 
@@ -176,28 +180,6 @@ impl SourceSpec {
         }
         Some(projection)
     }
-}
-
-fn parse_order(value: &Value) -> Result<OrderField, String> {
-    check_keys(value, &["field", "type", "direction"], "order_by entry")?;
-    let field = value
-        .get("field")
-        .and_then(|v| v.as_str())
-        .ok_or("order_by.field is required")?;
-    check_field(field)?;
-    let ty = value
-        .get("type")
-        .and_then(|v| v.as_str())
-        .ok_or("order_by.type is required")?;
-    let direction = value
-        .get("direction")
-        .and_then(|v| v.as_str())
-        .ok_or("order_by.direction is required")?;
-    Ok(OrderField {
-        field: field.to_string(),
-        ty: FieldType::parse(ty)?,
-        direction: Direction::parse(direction)?,
-    })
 }
 
 /// MongoDB allows dots in collection names (`app.events`). It reserves `$`,

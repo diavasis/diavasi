@@ -7,7 +7,7 @@ use diavasi::control::{ConnectionCreateRequest, ControlService, GroupCreateReque
 use diavasi::core::{ConsumerId, GroupId, OrderingAtom, RecordSource};
 use diavasi::dataplane::{
     ConsumerClient, ConsumerOptions, DataPlaneConfig, SharedProgress, generate_self_signed,
-    serve_dataplane,
+    serve_dataplane_on,
 };
 use diavasi::runtime::{RuntimeError, SourceOpen};
 use diavasi::store::{RedbStore, StateStore, StoreKey};
@@ -185,7 +185,7 @@ impl Lab {
             .create_group(GroupCreateRequest {
                 group_id: id.into(),
                 total_records: 0,
-                payload_size: 1,
+                payload_size: 0,
                 max_buffer_records: 4_096,
                 max_buffer_bytes: 64 * 1024 * 1024,
                 batch_max_records: batch,
@@ -468,7 +468,7 @@ async fn missing_table_and_bad_keys_fail_at_create() {
         .create_group(GroupCreateRequest {
             group_id: "missing".into(),
             total_records: 0,
-            payload_size: 1,
+            payload_size: 0,
             max_buffer_records: 8,
             max_buffer_bytes: 1024,
             batch_max_records: 1,
@@ -500,7 +500,7 @@ async fn missing_table_and_bad_keys_fail_at_create() {
         .create_group(GroupCreateRequest {
             group_id: "partial".into(),
             total_records: 0,
-            payload_size: 1,
+            payload_size: 0,
             max_buffer_records: 8,
             max_buffer_bytes: 1024,
             batch_max_records: 1,
@@ -532,7 +532,7 @@ async fn missing_table_and_bad_keys_fail_at_create() {
         .create_group(GroupCreateRequest {
             group_id: "doubles".into(),
             total_records: 0,
-            payload_size: 1,
+            payload_size: 0,
             max_buffer_records: 8,
             max_buffer_bytes: 1024,
             batch_max_records: 1,
@@ -647,21 +647,23 @@ async fn data_plane_consumes_partition_rows() {
     lab.group("g", lab.partition_spec(0, serde_json::json!({})), 4)
         .await;
     let _ = rustls::crypto::ring::default_provider().install_default();
-    let (ca, cert, key) = generate_self_signed().unwrap();
+    let (ca, cert, key) = generate_self_signed(&[]).unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    drop(listener);
     let supervisor = lab.service.supervisor();
     tokio::spawn(async move {
-        let _ = serve_dataplane(DataPlaneConfig {
-            bind: addr,
-            tls_cert_pem: cert.into_bytes(),
-            tls_key_pem: key.into_bytes(),
-            api_token: "tok".into(),
-            supervisor,
-            heartbeat_interval: Duration::from_secs(30),
-            heartbeat_timeout: Duration::from_secs(30),
-        })
+        let _ = serve_dataplane_on(
+            DataPlaneConfig {
+                bind: addr,
+                tls_cert_pem: cert.into_bytes(),
+                tls_key_pem: key.into_bytes(),
+                api_token: "tok".into(),
+                supervisor,
+                heartbeat_interval: Duration::from_secs(30),
+                heartbeat_timeout: Duration::from_secs(30),
+            },
+            listener,
+        )
         .await;
     });
     tokio::time::sleep(Duration::from_millis(50)).await;

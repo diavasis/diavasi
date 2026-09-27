@@ -14,14 +14,18 @@ const DEFAULT_SEND_TIMEOUT: Duration = Duration::from_secs(5);
 /// the task has exited.
 #[derive(Clone)]
 pub struct GroupHandle {
-    /// The group this handle talks to.
-    pub group_id: GroupId,
+    group_id: GroupId,
     tx: mpsc::Sender<RuntimeCommand>,
 }
 
 impl GroupHandle {
     pub(crate) fn new(group_id: GroupId, tx: mpsc::Sender<RuntimeCommand>) -> Self {
         Self { group_id, tx }
+    }
+
+    /// The group this handle talks to.
+    pub fn group_id(&self) -> &GroupId {
+        &self.group_id
     }
 
     async fn call<T>(
@@ -79,25 +83,29 @@ impl GroupHandle {
 
     /// The committed cursor in memory.
     pub async fn snapshot_cursor(&self) -> RuntimeResult<LogicalCursor> {
-        self.call(|reply| RuntimeCommand::SnapshotCursor { reply })
-            .await
+        Ok(self.live_snapshot().await?.committed)
     }
 
     /// Buffer and in-flight counts.
     pub async fn buffer_stats(&self) -> RuntimeResult<BufferStats> {
-        self.call(|reply| RuntimeCommand::BufferStats { reply })
-            .await
+        let snap = self.live_snapshot().await?;
+        Ok(BufferStats {
+            buffer_len: snap.buffer_records,
+            buffer_bytes: snap.buffer_bytes,
+            inflight_len: snap.inflight_batches,
+            max_buffer_records: snap.max_buffer_records,
+            max_buffer_bytes: snap.max_buffer_bytes,
+        })
     }
 
     /// The lifecycle.
     pub async fn lifecycle(&self) -> RuntimeResult<GroupLifecycle> {
-        self.call(|reply| RuntimeCommand::Lifecycle { reply }).await
+        Ok(self.live_snapshot().await?.lifecycle)
     }
 
     /// The joined consumers, sorted.
     pub async fn list_consumers(&self) -> RuntimeResult<Vec<ConsumerId>> {
-        self.call(|reply| RuntimeCommand::ListConsumers { reply })
-            .await
+        Ok(self.live_snapshot().await?.consumers)
     }
 
     /// Positions, counts, and consumers in one call.

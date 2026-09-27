@@ -22,7 +22,7 @@ pub use crash::{CrashAction, CrashHook, CrashPoint, no_crash};
 pub use crypto::{MASTER_KEY_ENV, StoreKey, open_secret, seal_secret};
 pub use durable::DurableGroup;
 pub use error::{StoreError, StoreResult};
-pub use redb::RedbStore;
+pub use redb::{BackupSummary, RedbStore};
 pub use trait_::StateStore;
 pub use types::{ConnectionRecord, GroupRecord, SealedSecret};
 

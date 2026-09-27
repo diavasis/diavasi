@@ -98,6 +98,8 @@ diavasi serve \
 | `--token`     | `DIAVASI_API_TOKEN` | Bearer token for `/v1` and for `DataPlane.Consume`.                       |
 | `--store-key` | `DIAVASI_STORE_KEY` | 32-byte hex key for secrets in the store. Required once the store holds a connection. |
 | `--tls-cert`, `--tls-key` | | Data-plane certificate and key. Both or neither. When omitted, a local CA and certificate are generated next to the store. |
+| `--tls-san` | | Extra DNS name or IP for the generated data-plane certificate, besides `localhost` and `127.0.0.1`. Repeatable. |
+| `--http-tls-cert`, `--http-tls-key` | | Control-plane certificate and key. Both or neither. When set, the control plane serves HTTPS. |
 | `--checkpoint-interval-ms` | `DIAVASI_CHECKPOINT_INTERVAL_MS` | 0 writes each ack's checkpoint before answering it. A larger value writes at most once per interval; a crash can replay up to one interval of acked records. |
 
 

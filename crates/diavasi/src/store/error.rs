@@ -38,10 +38,6 @@ pub enum StoreError {
     #[error("crypto: {0}")]
     Crypto(String),
 
-    /// An argument was invalid.
-    #[error("invalid argument: {0}")]
-    InvalidArgument(&'static str),
-
     /// The store was written by a version with a different schema.
     #[error("schema version mismatch: found {found}, supported {supported}")]
     SchemaVersion {

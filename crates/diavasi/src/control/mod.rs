@@ -12,6 +12,7 @@ mod error;
 mod routes;
 mod server;
 mod service;
+mod tls_listener;
 
 #[cfg(test)]
 mod tests;
@@ -20,5 +21,5 @@ pub use auth::{AuthValidator, BearerTokenAuth};
 pub use dto::*;
 pub use error::{ControlError, ControlResult};
 pub use routes::router;
-pub use server::{API_TOKEN_ENV, ServeConfig, serve, serve_until};
+pub use server::{API_TOKEN_ENV, Listeners, ServeConfig, ServeError, serve, serve_on, serve_until};
 pub use service::ControlService;

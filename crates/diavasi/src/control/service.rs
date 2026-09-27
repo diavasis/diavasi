@@ -12,8 +12,9 @@ use crate::store::{
 };
 
 use super::dto::{
-    CheckpointView, ConnectionCreateRequest, ConnectionView, ConsumersView, DiagnosticsView,
-    GroupCreateRequest, GroupView, StatusView, group_config_from_create,
+    BackupRequest, BackupView, CheckpointView, ConnectionCreateRequest, ConnectionView,
+    ConsumersView, DiagnosticsView, GroupCreateRequest, GroupView, StatusView,
+    group_config_from_create,
 };
 use super::error::{ControlError, ControlResult};
 
@@ -83,7 +84,7 @@ impl ControlService {
         for plan in plans {
             let opened = plan.open().await;
             if let Ok(handle) = self.supervisor.lock().await.finish_start(opened) {
-                recovered.push(handle.group_id.clone());
+                recovered.push(handle.group_id().clone());
             }
         }
         Ok(recovered)
@@ -150,7 +151,7 @@ impl ControlService {
         for (handle, snapshot) in handles.iter().zip(snapshots) {
             if let Ok(Ok(snap)) = snapshot {
                 samples.push(GaugeSample {
-                    group_id: handle.group_id.as_str().to_string(),
+                    group_id: handle.group_id().as_str().to_string(),
                     buffer_records: snap.buffer_records as u64,
                     buffer_bytes: snap.buffer_bytes as u64,
                     inflight_records: snap.inflight_records as u64,
@@ -205,6 +206,29 @@ impl ControlService {
         Ok(connection_view(&record))
     }
 
+    /// `POST /v1/store/backup`: a consistent copy of the store at an absolute
+    /// server path that does not exist yet. The server keeps running.
+    pub fn backup(&self, req: BackupRequest) -> ControlResult<BackupView> {
+        let path = std::path::Path::new(&req.path);
+        if !path.is_absolute() {
+            return Err(ControlError::BadRequest(
+                "backup path must be absolute".into(),
+            ));
+        }
+        if path.exists() {
+            return Err(ControlError::Conflict(format!(
+                "backup path already exists: {}",
+                req.path
+            )));
+        }
+        let summary = self.store.backup_to(path)?;
+        Ok(BackupView {
+            path: req.path,
+            connections: summary.connections,
+            groups: summary.groups,
+        })
+    }
+
     /// `GET /v1/connections`. Secrets are never returned.
     pub fn list_connections(&self) -> ControlResult<Vec<ConnectionView>> {
         Ok(self
@@ -256,6 +280,12 @@ impl ControlService {
                 "ordering_contract too long".into(),
             ));
         }
+        let mut req = req;
+        if req.connection_id.is_some() && (req.total_records != 0 || req.payload_size != 0) {
+            return Err(ControlError::BadRequest(
+                "total_records and payload_size apply only to synthetic groups".into(),
+            ));
+        }
         let config = group_config_from_create(&req).map_err(ControlError::BadRequest)?;
         // Fast answer before validating the source. `insert_group` below is
         // what makes the id unique under concurrent creates.
@@ -300,6 +330,16 @@ impl ControlService {
             return Err(ControlError::BadRequest(
                 "source_spec requires connection_id".into(),
             ));
+        }
+        if req.ordering_contract.is_empty() {
+            req.ordering_contract = match &req.connection_id {
+                None => "synthetic-u64".to_string(),
+                Some(cid) => self
+                    .store
+                    .get_connection(cid)?
+                    .map(|connection| connection.kind)
+                    .unwrap_or_default(),
+            };
         }
         let g = DurableGroup::create_with_source(
             Arc::clone(&self.store),
@@ -513,7 +553,8 @@ impl ControlService {
             adapter_errors: counters.adapter_errors,
             last_stop_reason: outcome
                 .as_ref()
-                .map(|outcome| outcome.last_stop_reason.clone()),
+                .and_then(|outcome| outcome.last_stop_reason.as_ref())
+                .map(ToString::to_string),
             recovered: outcome.map(|outcome| outcome.recovered).unwrap_or(false),
         })
     }

@@ -13,7 +13,8 @@
 //!     source_factory: Some(Arc::new(diavasi_adapter_mongodb::MongoFactory)),
 //!     ..config
 //! })
-//! .await
+//! .await?;
+//! # Ok(())
 //! # }
 //! ```
 //!

@@ -1,6 +1,6 @@
 # HTTP API
 
-The control plane listens on `--bind` (default `127.0.0.1:7700`). Bodies are JSON. Every route except `/health` and `/ready` needs `Authorization: Bearer <token>`; a missing or wrong token is `401` with the body `unauthorized`. A request body over 88 KiB is `413`.
+The control plane listens on `--bind` (default `127.0.0.1:7700`), over HTTPS when the server has `--http-tls-cert` and `--http-tls-key`. Bodies are JSON. Every route except `/health` and `/ready` needs `Authorization: Bearer <token>`; a missing or wrong token is `401` with the body `unauthorized`. A request body over 88 KiB is `413`.
 
 The examples use:
 
@@ -17,7 +17,7 @@ A failed request returns a status and `{"error": "<message>"}`.
 | --- | --- |
 | 400 | Invalid input: a malformed id, a zero cap, a `batch_timeout_ms` under 100, a source spec the adapter rejects. |
 | 404 | The group or connection does not exist. |
-| 409 | The request conflicts with state: the id exists, the group is running (delete) or not running (drain), a second drain, a connection still in use, a temporary store key. |
+| 409 | The request conflicts with state: the id exists, the group is running (delete) or not running (drain), a second drain, a connection still in use, a temporary store key, a backup path that exists. |
 | 503 | The group did not accept the command within 5 seconds. Retry. |
 | 500 | Anything else. |
 
@@ -64,7 +64,7 @@ curl -s -H "$AUTH" -H 'content-type: application/json' $DIAVASI_URL/v1/connectio
  "secret_sealed": true}
 ```
 
-`kind` is `postgres`, `mongodb`, `redis`, or `scylla`. The `config_json` keys for each are in [docs/adapters](adapters/); an unknown key fails the first group that uses the connection. `secret` is 1 byte to 16 KiB; `config_json` is at most 64 KiB.
+`kind` is `postgres`, `mongodb`, `redis`, or `scylla`. The `config_json` keys for each are in [docs/adapters](adapters/); an unknown key fails the first group that uses the connection, and the error names the key. `secret` is 1 byte to 16 KiB; `config_json` is at most 64 KiB.
 
 ## Groups
 
@@ -87,7 +87,6 @@ Create:
 ```bash
 curl -s -H "$AUTH" -H 'content-type: application/json' $DIAVASI_URL/v1/groups -d '{
   "group_id": "orders",
-  "total_records": 0, "payload_size": 0,
   "max_buffer_records": 4096, "max_buffer_bytes": 8388608,
   "batch_max_records": 200, "batch_timeout_ms": 30000,
   "ordering_contract": "postgres-keyset",
@@ -98,12 +97,12 @@ curl -s -H "$AUTH" -H 'content-type: application/json' $DIAVASI_URL/v1/groups -d
 | Field | Rule |
 | --- | --- |
 | `group_id` | An id as above. |
-| `total_records`, `payload_size` | Synthetic groups only (no `connection_id`): records `1..=total_records` of `payload_size` bytes. `0` for adapter groups. |
+| `total_records`, `payload_size` | Synthetic groups only (no `connection_id`): records `1..=total_records` of `payload_size` bytes. Optional, default `0`. A non-zero value on an adapter group is `400`. |
 | `max_buffer_records`, `max_buffer_bytes` | At least 1. Read-ahead stops at either cap. |
 | `batch_max_records` | 1 to `max_buffer_records`. A batch also stops before 4 MiB less 64 KiB of payload. |
 | `batch_timeout_ms` | At least 100. A batch not acked in time is delivered again. |
-| `ordering_contract` | A label, at most 1024 bytes. Stored and shown, not interpreted. |
-| `connection_id`, `source_spec` | Both or neither. The spec keys depend on the adapter. |
+| `ordering_contract` | Optional label, at most 1024 bytes. Stored and shown, not interpreted. Defaults to `synthetic-u64`, or to the connection's `kind`. |
+| `connection_id`, `source_spec` | Both or neither. The spec keys depend on the adapter; an unknown key or a wrong type is `400`, with the key named. |
 
 A group as returned:
 
@@ -123,6 +122,23 @@ Checkpoint:
 ```
 
 A cursor is `null` at the start of the stream, otherwise an array of tagged values in order-by order: `I64` for integers and timestamps (microseconds for Postgres, milliseconds for MongoDB dates), `U64` for synthetic ids and Redis stream id parts, `Bytes` for text and binary keys. `live_cursor` is `null` when the group is not running and can lead `durable_cursor` by one checkpoint interval.
+
+## Store backup
+
+| Route | Returns |
+| --- | --- |
+| `POST /v1/store/backup` | Copies the store to a new file on the server host and returns what it copied. |
+
+```bash
+curl -s -H "$AUTH" -H 'content-type: application/json' $DIAVASI_URL/v1/store/backup \
+  -d '{"path": "/var/backups/diavasi/meta-2026-09-27.redb"}'
+```
+
+```json
+{"path": "/var/backups/diavasi/meta-2026-09-27.redb", "connections": 2, "groups": 5}
+```
+
+`path` must be absolute (`400`) and must not exist (`409`); the parent directory must exist. The copy is one consistent read of connections, groups, and checkpoints, taken while groups keep running. Secrets stay sealed with the store key, so the backup needs that key to be used.
 
 ## Data plane
 

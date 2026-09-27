@@ -1,12 +1,11 @@
 //! Seed one adapter backend and consume the rows through a short-lived server.
 
 use std::collections::HashSet;
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::time::{Duration, Instant};
 
-use diavasi::control::{ServeConfig, serve};
+use diavasi::control::{Listeners, ServeConfig, serve_on};
 use diavasi::dataplane::{ConsumerClient, ConsumerOptions, SharedProgress};
 use diavasi::store::StoreKey;
 use diavasi_adapter_mongodb::connect::{MongoEndpoint, connect as connect_mongo};
@@ -301,8 +300,14 @@ async fn consume(test: &AdapterTest, prepared: &Prepared) -> Result<Report, Stri
         std::process::id()
     ));
     std::fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
-    let control = bind_addr()?;
-    let data = bind_addr()?;
+    // Bound before the server starts, so no other process can take the ports.
+    let listeners = Listeners::bind(
+        "127.0.0.1:0".parse().expect("address"),
+        "127.0.0.1:0".parse().expect("address"),
+    )
+    .map_err(|err| err.to_string())?;
+    let control = listeners.control_addr();
+    let data = listeners.data_addr();
     let token = "adapter-test".to_string();
     let config = ServeConfig {
         bind: control,
@@ -314,9 +319,12 @@ async fn consume(test: &AdapterTest, prepared: &Prepared) -> Result<Report, Stri
         tls_key: None,
         source_factory: Some(Arc::new(RoutingFactory::installed())),
         checkpoint_interval: std::time::Duration::ZERO,
+        tls_san: Vec::new(),
+        http_tls_cert: None,
+        http_tls_key: None,
     };
     let server = tokio::spawn(async move {
-        if let Err(err) = serve(config).await {
+        if let Err(err) = serve_on(config, listeners, std::future::pending()).await {
             tracing::error!("serve ended: {err}");
         }
     });
@@ -362,7 +370,6 @@ async fn consume_group(
         &serde_json::json!({
             "group_id": "t",
             "total_records": 0,
-            "payload_size": test.payload_bytes,
             "max_buffer_records": 4_096,
             "max_buffer_bytes": max_buffer_bytes,
             "batch_max_records": batch,
@@ -480,11 +487,6 @@ fn ident(name: &str) -> Result<(), String> {
         return Err("object name must be letters, digits, and underscores".into());
     }
     Ok(())
-}
-
-fn bind_addr() -> Result<SocketAddr, String> {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").map_err(|err| err.to_string())?;
-    listener.local_addr().map_err(|err| err.to_string())
 }
 
 async fn wait_health(base: &str) -> Result<(), String> {

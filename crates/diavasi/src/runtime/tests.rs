@@ -430,7 +430,10 @@ async fn abort_restarts_without_moving_the_cursor() {
     sup.start_group(&gid).await.unwrap();
     sup.abort_group(&gid).unwrap();
     let outcome = wait_recovered(&mut sup, &gid).await;
-    assert_eq!(outcome.last_stop_reason, "task aborted");
+    assert_eq!(
+        outcome.last_stop_reason,
+        Some(crate::runtime::StopReason::Aborted)
+    );
     assert!(outcome.recovered);
     assert_eq!(sup.observe().counters("g1", "synthetic").restarts, 1);
     assert_eq!(store.load_checkpoint(&gid).unwrap(), None);
@@ -450,7 +453,12 @@ async fn source_error_is_explicit_then_recovered() {
         .await
         .unwrap();
     let outcome = wait_recovered(&mut sup, &gid).await;
-    assert_eq!(outcome.last_stop_reason, "database unavailable");
+    assert_eq!(
+        outcome.last_stop_reason,
+        Some(crate::runtime::StopReason::SourceUnavailable(
+            "database unavailable".into()
+        ))
+    );
     assert!(outcome.recovered);
     assert!(sup.observe().counters("g1", "synthetic").adapter_errors >= 1);
     assert_eq!(store.load_checkpoint(&gid).unwrap(), None);

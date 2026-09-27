@@ -1,7 +1,9 @@
 //! `source_spec` for a ScyllaDB table, and the cursor encoding.
 
+use base64::Engine as _;
 use diavasi::core::encoding;
 use diavasi::core::{OrderingAtom, OrderingValue};
+use diavasi::runtime::parse_json;
 use scylla::value::{CqlDate, CqlTimestamp, CqlValue};
 use serde_json::{Map, Value};
 use uuid::Uuid;
@@ -77,88 +79,64 @@ pub struct SourceSpec {
     pub columns: Option<Vec<String>>,
 }
 
+/// The `source_spec` JSON as written. Checked into a [`SourceSpec`].
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawSpec {
+    table: String,
+    #[serde(default)]
+    keyspace: Option<String>,
+    #[serde(default)]
+    partition: Option<Map<String, Value>>,
+    #[serde(default)]
+    scan: Option<String>,
+    #[serde(default)]
+    columns: Option<Vec<String>>,
+}
+
 impl SourceSpec {
     pub fn parse(value: &Value) -> Result<Self, String> {
-        let obj = value.as_object().ok_or("source_spec must be an object")?;
-        for key in obj.keys() {
-            match key.as_str() {
-                "keyspace" | "table" | "partition" | "scan" | "columns" => {}
-                other => {
-                    return Err(format!(
-                        "unknown source_spec field {other} (ALLOW FILTERING, secondary indexes, and ORDER BY are not supported)"
-                    ));
-                }
+        let raw: RawSpec = parse_json(value, "source_spec").map_err(|err| {
+            if err.contains("unknown field") {
+                format!(
+                    "{err} (ALLOW FILTERING, secondary indexes, and ORDER BY are not supported)"
+                )
+            } else {
+                err
             }
+        })?;
+        check_ident(&raw.table, "table")?;
+        if let Some(name) = &raw.keyspace {
+            check_ident(name, "keyspace")?;
         }
-        let table = obj
-            .get("table")
-            .and_then(|v| v.as_str())
-            .ok_or("source_spec.table is required")?;
-        check_ident(table, "table")?;
-        let keyspace = match obj.get("keyspace") {
-            None => None,
-            Some(value) => {
-                let name = value
-                    .as_str()
-                    .ok_or("source_spec.keyspace must be a string")?;
-                check_ident(name, "keyspace")?;
-                Some(name.to_string())
-            }
-        };
-        let partition = match obj.get("partition") {
-            None => None,
-            Some(value) => Some(
-                value
-                    .as_object()
-                    .cloned()
-                    .ok_or("source_spec.partition must be an object")?,
-            ),
-        };
-        let token = match obj.get("scan") {
+        let token = match raw.scan.as_deref() {
             None => false,
-            Some(value) => {
-                let scan = value.as_str().ok_or("source_spec.scan must be a string")?;
-                if scan != "token" {
-                    return Err("source_spec.scan must be \"token\"".into());
-                }
-                true
-            }
+            Some("token") => true,
+            Some(_) => return Err("source_spec.scan must be \"token\"".into()),
         };
-        if partition.is_none() && !token {
+        if raw.partition.is_none() && !token {
             return Err(
                 "source_spec needs partition or scan \"token\" (a full table scan is not the default)"
                     .into(),
             );
         }
-        if partition.is_some() && token {
+        if raw.partition.is_some() && token {
             return Err("source_spec cannot set both partition and scan".into());
         }
-        let columns = match obj.get("columns") {
-            None => None,
-            Some(value) => {
-                let list = value
-                    .as_array()
-                    .ok_or("source_spec.columns must be an array")?;
-                let mut names = Vec::new();
-                for item in list {
-                    let name = item
-                        .as_str()
-                        .ok_or("source_spec.columns entries must be strings")?;
-                    check_ident(name, "column")?;
-                    if names.iter().any(|existing: &String| existing == name) {
-                        return Err(format!("source_spec.columns lists {name} twice"));
-                    }
-                    names.push(name.to_string());
+        if let Some(names) = &raw.columns {
+            for (index, name) in names.iter().enumerate() {
+                check_ident(name, "column")?;
+                if names[..index].contains(name) {
+                    return Err(format!("source_spec.columns lists {name} twice"));
                 }
-                Some(names)
             }
-        };
+        }
         Ok(Self {
-            keyspace,
-            table: table.to_string(),
-            partition,
+            keyspace: raw.keyspace,
+            table: raw.table,
+            partition: raw.partition,
             token,
-            columns,
+            columns: raw.columns,
         })
     }
 }
@@ -424,74 +402,16 @@ fn json_f64(value: f64) -> Result<Value, String> {
         .ok_or_else(|| "payload float is not finite".into())
 }
 
+/// Standard base64 with padding: how blobs appear in JSON.
 pub fn b64_encode(data: &[u8]) -> String {
-    const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::new();
-    let mut index = 0;
-    while index + 3 <= data.len() {
-        let n = (u32::from(data[index]) << 16)
-            | (u32::from(data[index + 1]) << 8)
-            | u32::from(data[index + 2]);
-        out.push(TABLE[((n >> 18) & 63) as usize] as char);
-        out.push(TABLE[((n >> 12) & 63) as usize] as char);
-        out.push(TABLE[((n >> 6) & 63) as usize] as char);
-        out.push(TABLE[(n & 63) as usize] as char);
-        index += 3;
-    }
-    let rest = data.len() - index;
-    if rest == 1 {
-        let n = u32::from(data[index]) << 16;
-        out.push(TABLE[((n >> 18) & 63) as usize] as char);
-        out.push(TABLE[((n >> 12) & 63) as usize] as char);
-        out.push('=');
-        out.push('=');
-    } else if rest == 2 {
-        let n = (u32::from(data[index]) << 16) | (u32::from(data[index + 1]) << 8);
-        out.push(TABLE[((n >> 18) & 63) as usize] as char);
-        out.push(TABLE[((n >> 12) & 63) as usize] as char);
-        out.push(TABLE[((n >> 6) & 63) as usize] as char);
-        out.push('=');
-    }
-    out
+    base64::engine::general_purpose::STANDARD.encode(data)
 }
 
+/// Decode standard base64 with padding.
 pub fn b64_decode(text: &str) -> Result<Vec<u8>, String> {
-    fn val(byte: u8) -> Result<u8, String> {
-        match byte {
-            b'A'..=b'Z' => Ok(byte - b'A'),
-            b'a'..=b'z' => Ok(byte - b'a' + 26),
-            b'0'..=b'9' => Ok(byte - b'0' + 52),
-            b'+' => Ok(62),
-            b'/' => Ok(63),
-            _ => Err("blob is not base64".into()),
-        }
-    }
-    let bytes = text.as_bytes();
-    if bytes.len() % 4 != 0 {
-        return Err("blob is not base64".into());
-    }
-    let mut out = Vec::new();
-    let mut index = 0;
-    while index < bytes.len() {
-        let pad = (bytes[index + 2] == b'=') as usize + (bytes[index + 3] == b'=') as usize;
-        if pad == 1 && bytes[index + 3] != b'=' {
-            return Err("blob is not base64".into());
-        }
-        let a = val(bytes[index])?;
-        let b = val(bytes[index + 1])?;
-        let c = if pad == 2 { 0 } else { val(bytes[index + 2])? };
-        let d = if pad >= 1 { 0 } else { val(bytes[index + 3])? };
-        let n = (u32::from(a) << 18) | (u32::from(b) << 12) | (u32::from(c) << 6) | u32::from(d);
-        out.push((n >> 16) as u8);
-        if pad < 2 {
-            out.push((n >> 8) as u8);
-        }
-        if pad < 1 {
-            out.push(n as u8);
-        }
-        index += 4;
-    }
-    Ok(out)
+    base64::engine::general_purpose::STANDARD
+        .decode(text)
+        .map_err(|_| "blob is not base64".into())
 }
 
 pub fn cmp_op(direction: Direction) -> &'static str {
@@ -571,5 +491,30 @@ mod tests {
         assert_eq!(b64_decode(&encoded).unwrap(), vec![0, 1, 255]);
         let json = cql_to_json(Some(CqlValue::Blob(vec![0, 1, 255]))).unwrap();
         assert_eq!(json, Value::from(encoded));
+        for len in 0..8u8 {
+            let data: Vec<u8> = (0..len).collect();
+            assert_eq!(b64_decode(&b64_encode(&data)).unwrap(), data);
+        }
+        assert_eq!(b64_encode(b"diavasi"), "ZGlhdmFzaQ==");
+        assert!(b64_decode("ZGlhdmFzaQ").is_err());
+        assert!(b64_decode("ZGl*").is_err());
+    }
+
+    /// S2: the spec is checked field by field, with the key named.
+    #[test]
+    fn spec_errors_name_the_field() {
+        let err = SourceSpec::parse(&json!({"table": 1, "scan": "token"})).unwrap_err();
+        assert!(err.starts_with("source_spec.table:"), "{err}");
+        let err = SourceSpec::parse(&json!({"table": "t", "scan": "full"})).unwrap_err();
+        assert!(err.contains("token"), "{err}");
+        let err = SourceSpec::parse(&json!({
+            "table": "t", "scan": "token", "columns": ["a", "b", "a"]
+        }))
+        .unwrap_err();
+        assert!(err.contains("twice"), "{err}");
+        let ok =
+            SourceSpec::parse(&json!({"table": "t", "keyspace": "ks", "scan": "token"})).unwrap();
+        assert!(ok.token);
+        assert_eq!(ok.keyspace.as_deref(), Some("ks"));
     }
 }

@@ -20,6 +20,22 @@ Delivery stays at-least-once. Unacked documents are read again after a crash. Th
 - `filter` is a query object. `$where` and `$function` are rejected.
 - When `user` is set, the sealed secret is the password. When `user` is omitted, the client does not authenticate. `tls` is `disable` or `require`.
 
+## Connection
+
+`config_json` names one server with `host` and `port` (default 27017), or a replica set, several `mongos` routers, or a DNS seed list with `uri`. Not both.
+
+| Key | Rule |
+| --- | --- |
+| `host`, `port` | One server, connected to directly. |
+| `uri` | `mongodb://a:27017,b:27017/?replicaSet=rs0` or `mongodb+srv://cluster0.example.net`. The driver discovers the topology and follows the primary. It must not hold a user or password; set `user` and put the password in the secret. Other options in the string (`replicaSet`, `readPreference`, `tlsCAFile`, ...) apply. |
+| `database` | Required. The database that holds the collection. |
+| `user`, `auth_source` | Optional. `auth_source` defaults to `admin`. |
+| `tls` | `disable` or `require`. With `host`, omitted means `disable`. With `uri`, omitted leaves TLS to the string: on for `mongodb+srv://` and for `tls=true`. |
+
+```json
+{"uri": "mongodb+srv://cluster0.example.net/?retryWrites=false", "database": "app", "user": "diavasi"}
+```
+
 ## Limitation
 
 This is not a change stream.

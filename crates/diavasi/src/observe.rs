@@ -89,6 +89,7 @@ struct Inner {
     restarts: IntCounterVec,
     recovery_failures: IntCounterVec,
     stale_acks: IntCounterVec,
+    contract_failures: IntCounterVec,
     disconnects: IntCounterVec,
     adapter_errors: IntCounterVec,
     scrape: Mutex<()>,
@@ -179,6 +180,11 @@ impl Observe {
             "Acks for batches no longer in flight, usually timed out and redelivered",
             &["group_id"],
         );
+        let contract_failures = counter_vec(
+            "diavasi_group_contract_failures_total",
+            "Groups stopped because the source data broke its contract",
+            &["group_id"],
+        );
         let disconnects = counter_vec(
             "diavasi_consumer_disconnects_total",
             "Consumer sessions that left or dropped",
@@ -208,6 +214,7 @@ impl Observe {
             restarts.clone().boxed(),
             recovery_failures.clone().boxed(),
             stale_acks.clone().boxed(),
+            contract_failures.clone().boxed(),
             disconnects.clone().boxed(),
             adapter_errors.clone().boxed(),
         ] {
@@ -234,6 +241,7 @@ impl Observe {
                 restarts,
                 recovery_failures,
                 stale_acks,
+                contract_failures,
                 disconnects,
                 adapter_errors,
                 scrape: Mutex::new(()),
@@ -334,6 +342,14 @@ impl Observe {
         self.inner.disconnects.with_label_values(&[group]).inc();
     }
 
+    /// The group stopped because its source broke the contract.
+    pub fn record_contract_failure(&self, group: &str) {
+        self.inner
+            .contract_failures
+            .with_label_values(&[group])
+            .inc();
+    }
+
     /// A source read failed.
     pub fn record_adapter_error(&self, group: &str, adapter: &str) {
         self.inner
@@ -375,6 +391,7 @@ impl Observe {
             &inner.restarts,
             &inner.recovery_failures,
             &inner.stale_acks,
+            &inner.contract_failures,
             &inner.disconnects,
         ] {
             let _ = vec.remove_label_values(&[group]);

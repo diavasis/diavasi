@@ -9,47 +9,37 @@ pub struct SourceSpec {
     pub fields: Option<Vec<String>>,
 }
 
-impl SourceSpec {
-    pub fn parse(value: &serde_json::Value) -> Result<Self, String> {
-        diavasi::runtime::check_keys(value, &["stream", "group", "fields"], "source_spec")?;
-        let object = value.as_object().ok_or("source_spec must be an object")?;
-        let stream = required_name(object, "stream")?;
-        // `group` named a Redis consumer group before reads became XRANGE.
-        // Stored specs still carry it, so it is accepted and ignored.
-        if let Some(group) = object.get("group") {
-            if !group.is_string() {
-                return Err("group must be a string".into());
-            }
-        }
-        let fields = match object.get("fields") {
-            None => None,
-            Some(serde_json::Value::Array(items)) => {
-                let mut names = Vec::with_capacity(items.len());
-                for item in items {
-                    let name = item
-                        .as_str()
-                        .filter(|name| !name.is_empty())
-                        .ok_or("fields entries must be non-empty strings")?;
-                    names.push(name.to_string());
-                }
-                Some(names)
-            }
-            Some(_) => return Err("fields must be an array of strings".into()),
-        };
-        Ok(Self { stream, fields })
-    }
+/// The `source_spec` JSON as written. Checked into a [`SourceSpec`].
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawSpec {
+    stream: String,
+    // `group` named a Redis consumer group before reads became XRANGE.
+    // Stored specs still carry it, so it is accepted and ignored.
+    #[serde(default, rename = "group")]
+    _group: Option<String>,
+    #[serde(default)]
+    fields: Option<Vec<String>>,
 }
 
-fn required_name(
-    object: &serde_json::Map<String, serde_json::Value>,
-    key: &str,
-) -> Result<String, String> {
-    object
-        .get(key)
-        .and_then(|value| value.as_str())
-        .filter(|name| !name.is_empty())
-        .map(str::to_string)
-        .ok_or_else(|| format!("{key} is required"))
+impl SourceSpec {
+    pub fn parse(value: &serde_json::Value) -> Result<Self, String> {
+        let raw: RawSpec = diavasi::runtime::parse_json(value, "source_spec")?;
+        if raw.stream.is_empty() {
+            return Err("stream is required".into());
+        }
+        if raw
+            .fields
+            .as_ref()
+            .is_some_and(|names| names.iter().any(String::is_empty))
+        {
+            return Err("fields entries must be non-empty strings".into());
+        }
+        Ok(Self {
+            stream: raw.stream,
+            fields: raw.fields,
+        })
+    }
 }
 
 /// The cursor as `(milliseconds, sequence)`, or `None` at the start.
@@ -107,7 +97,11 @@ mod tests {
             "group": "g",
             "fields": "body",
         }));
-        assert!(fields.unwrap_err().contains("array"));
+        assert!(fields.unwrap_err().contains("sequence"));
+        let empty = SourceSpec::parse(&serde_json::json!({"stream": "events", "fields": [""]}));
+        assert!(empty.unwrap_err().contains("non-empty"));
+        let blank = SourceSpec::parse(&serde_json::json!({"stream": ""}));
+        assert!(blank.unwrap_err().contains("stream"));
     }
 
     #[test]

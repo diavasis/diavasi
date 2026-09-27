@@ -26,8 +26,8 @@ pub use group_runtime::{
     spawn_group_runtime,
 };
 pub use handle::GroupHandle;
-pub use source_factory::{SourceFactory, SourceOpen, check_keys};
+pub use source_factory::{SourceFactory, SourceOpen, check_keys, parse_json};
 pub use supervisor::{
     FailedStart, GroupOutcome, GroupSupervisor, OpenedGroup, RETRY_FIRST, RETRY_MAX,
-    RETRY_RESET_AFTER, StartPlan,
+    RETRY_RESET_AFTER, StartPlan, StopReason,
 };

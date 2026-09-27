@@ -110,7 +110,7 @@ impl GroupEngine {
     pub fn new(config: GroupConfig) -> CoreResult<Self> {
         if config.batch_max_records == 0 {
             return Err(CoreError::InvalidArgument(
-                "batch_max_records must be non-zero",
+                "batch_max_records must be non-zero".into(),
             ));
         }
         let buffer = BoundedBuffer::new(config.max_buffer_records, config.max_buffer_bytes)?;
@@ -307,9 +307,10 @@ impl GroupEngine {
         let mut fetched = 0usize;
         for record in records {
             if !is_after(&self.fetched_cursor, &record.ordering) {
-                return Err(CoreError::InvalidArgument(
-                    "source returned a record that is not after the fetched cursor",
-                ));
+                return Err(CoreError::InvalidArgument(format!(
+                    "source returned {:?}, which is not after the fetched cursor {:?}",
+                    record.ordering, self.fetched_cursor
+                )));
             }
             if !self.buffer.can_accept(&record) {
                 break;

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted for Stage 1 onward.
+Accepted in v0.1.0.
 
 ## Decision
 

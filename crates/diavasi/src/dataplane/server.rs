@@ -43,27 +43,57 @@ pub struct DataPlaneConfig {
     pub heartbeat_timeout: Duration,
 }
 
-/// Serve `DataPlane.Consume` over TLS until the task is aborted or the listener fails.
-pub async fn serve_dataplane(
+/// Bind `config.bind` and serve `DataPlane.Consume` over TLS until the task
+/// is aborted or the listener fails. See [`serve_dataplane_on`].
+pub async fn serve_dataplane(config: DataPlaneConfig) -> Result<(), DataPlaneError> {
+    let listener = tokio::net::TcpListener::bind(config.bind)
+        .await
+        .map_err(DataPlaneError::Bind)?;
+    serve_dataplane_on(config, listener).await
+}
+
+/// Why the data plane stopped.
+#[derive(Debug, thiserror::Error)]
+pub enum DataPlaneError {
+    /// The address could not be bound.
+    #[error("bind: {0}")]
+    Bind(std::io::Error),
+    /// The gRPC server failed.
+    #[error(transparent)]
+    Transport(#[from] tonic::transport::Error),
+}
+
+/// Serve `DataPlane.Consume` over TLS on a bound `listener`.
+/// `config.bind` is only reported.
+pub async fn serve_dataplane_on(
     config: DataPlaneConfig,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    listener: tokio::net::TcpListener,
+) -> Result<(), DataPlaneError> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let identity = Identity::from_pem(&config.tls_cert_pem, &config.tls_key_pem);
-    let svc = DataSvc {
+    let addr = listener.local_addr().unwrap_or(config.bind);
+    let svc = data_service(config);
+    tracing::info!(%addr, "diavasi data plane listening (gRPC TLS)");
+    let incoming = futures::stream::unfold(listener, |listener| async move {
+        let accepted = listener.accept().await.map(|(stream, _)| stream);
+        Some((accepted, listener))
+    });
+    Server::builder()
+        .tls_config(ServerTlsConfig::new().identity(identity))?
+        .add_service(DataPlaneServer::new(svc))
+        .serve_with_incoming(incoming)
+        .await?;
+    Ok(())
+}
+
+fn data_service(config: DataPlaneConfig) -> DataSvc {
+    DataSvc {
         auth: BearerTokenAuth::new(config.api_token),
         supervisor: config.supervisor,
         sessions: Arc::new(SessionRegistry::default()),
         heartbeat_interval: config.heartbeat_interval,
         heartbeat_timeout: config.heartbeat_timeout,
-    };
-    let addr = config.bind;
-    tracing::info!(%addr, "diavasi data plane listening (gRPC TLS)");
-    Server::builder()
-        .tls_config(ServerTlsConfig::new().identity(identity))?
-        .add_service(DataPlaneServer::new(svc))
-        .serve(addr)
-        .await?;
-    Ok(())
+    }
 }
 
 /// How long a stream's request for records waits in the group before the
@@ -226,7 +256,7 @@ impl JoinedConsumer {
 impl Drop for JoinedConsumer {
     fn drop(&mut self) {
         self.sessions
-            .remove(&self.handle.group_id, &self.consumer, self.ticket.id);
+            .remove(self.handle.group_id(), &self.consumer, self.ticket.id);
         self.ticket.closed.notify_one();
         if self.left {
             return;
@@ -246,9 +276,9 @@ impl Drop for JoinedConsumer {
 }
 
 fn note_disconnect(observe: &Observe, handle: &GroupHandle, consumer: &ConsumerId) {
-    observe.record_disconnect(handle.group_id.as_str());
+    observe.record_disconnect(handle.group_id().as_str());
     tracing::info!(
-        group_id = %handle.group_id,
+        group_id = %handle.group_id(),
         consumer_id = %consumer.as_str(),
         "consumer disconnected"
     );
@@ -337,7 +367,7 @@ async fn drive_session(
                                         Ok(consumer) => {
                                             evict = Some(Arc::clone(&consumer.ticket.evict));
                                             let frame = super::joined(
-                                                consumer.handle.group_id.as_str(),
+                                                consumer.handle.group_id().as_str(),
                                                 consumer.consumer.as_str(),
                                             );
                                             let _ = tx.send(Ok(frame)).await;
@@ -358,7 +388,7 @@ async fn drive_session(
                                             .await
                                         {
                                             tracing::warn!(
-                                                group_id = %consumer.handle.group_id,
+                                                group_id = %consumer.handle.group_id(),
                                                 consumer_id = %consumer.consumer.as_str(),
                                                 error = %e,
                                                 "ack failed"

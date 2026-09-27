@@ -11,7 +11,7 @@ use crate::core::{
 use crate::observe::Observe;
 use crate::store::{DurableGroup, StateStore, StoreError};
 
-use super::command::{BufferStats, LiveSnapshot, RuntimeCommand};
+use super::command::{LiveSnapshot, RuntimeCommand};
 use super::error::{RuntimeError, RuntimeResult};
 use super::handle::GroupHandle;
 
@@ -273,19 +273,6 @@ where
                             let _ = reply.send(result);
                         }
                     }
-                    RuntimeCommand::SnapshotCursor { reply } => {
-                        let _ = reply.send(Ok(durable.committed_cursor().clone()));
-                    }
-                    RuntimeCommand::BufferStats { reply } => {
-                        let eng = durable.engine();
-                        let _ = reply.send(Ok(BufferStats {
-                            buffer_len: eng.buffer_len(),
-                            buffer_bytes: eng.buffer_bytes(),
-                            inflight_len: eng.inflight_len(),
-                            max_buffer_records: eng.config().max_buffer_records,
-                            max_buffer_bytes: eng.config().max_buffer_bytes,
-                        }));
-                    }
                     RuntimeCommand::LiveSnapshot { reply } => {
                         let eng = durable.engine();
                         let _ = reply.send(Ok(LiveSnapshot {
@@ -295,14 +282,11 @@ where
                             buffer_records: eng.buffer_len(),
                             buffer_bytes: eng.buffer_bytes(),
                             inflight_records: eng.inflight_records(),
+                            inflight_batches: eng.inflight_len(),
+                            max_buffer_records: eng.config().max_buffer_records,
+                            max_buffer_bytes: eng.config().max_buffer_bytes,
                             consumers: durable.list_consumers(),
                         }));
-                    }
-                    RuntimeCommand::Lifecycle { reply } => {
-                        let _ = reply.send(Ok(durable.engine().lifecycle()));
-                    }
-                    RuntimeCommand::ListConsumers { reply } => {
-                        let _ = reply.send(Ok(durable.list_consumers()));
                     }
                     RuntimeCommand::Drain { reply } => {
                         let result = durable

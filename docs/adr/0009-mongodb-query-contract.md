@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted for Stage 8 onward.
+Accepted in v0.8.0.
 
 ## Context
 
@@ -40,6 +40,8 @@ The engine accepts a batch only when each ordering tuple is strictly after the p
 Payload is the document as relaxed extended JSON. One client is opened per running group.
 
 Connection `config_json` is `host`, `port`, `database`, optional `user`, `auth_source` (default `admin`), and `tls` (`disable` or `require`). Keys other than these are rejected, so a misspelled key fails at group create instead of being ignored. When `user` is set, the sealed secret is the password. When `user` is omitted, the driver connects without credentials. The control plane still requires a non-empty secret; that value is not sent to MongoDB.
+
+Amended in v0.12.0: `config_json` can give `uri` (`mongodb://` with several hosts, or `mongodb+srv://`) instead of `host` and `port`. With `uri`, the driver discovers the topology instead of connecting directly to one server, and credentials still come from `user` and the sealed secret.
 
 ## Consequences
 

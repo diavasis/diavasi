@@ -2,7 +2,7 @@
 
 use std::io;
 use std::process::ExitCode;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -11,6 +11,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Cell, Paragraph, Row, Table, Wrap};
 use serde::Deserialize;
+use tokio::sync::mpsc;
 
 const REFRESH: Duration = Duration::from_secs(1);
 
@@ -28,6 +29,8 @@ struct GroupLine {
 }
 
 struct Detail {
+    /// The group these diagnostics belong to.
+    group_id: String,
     running: bool,
     lifecycle: String,
     committed: String,
@@ -67,8 +70,21 @@ struct Dashboard {
 enum Effect {
     None,
     Quit,
+    /// Reload everything now.
     Refresh,
+    /// The selection moved: redraw now and reload only its diagnostics.
+    Select,
     Post(String),
+}
+
+/// What the event loop wakes up for. Terminal input arrives from a reader
+/// thread; loads and posts run as tasks and report back here, so a slow
+/// server never delays a key press.
+enum Msg {
+    Input(io::Result<Event>),
+    Refreshed(Refresh),
+    Detail(String, Result<Detail, String>),
+    Posted(Result<(), String>),
 }
 
 pub async fn run(base: &str, token: &str) -> Result<(), ExitCode> {
@@ -96,39 +112,109 @@ async fn drive(
     token: &str,
     dash: &mut Dashboard,
 ) -> Result<(), ExitCode> {
-    let mut next_refresh = Instant::now();
-    loop {
-        if Instant::now() >= next_refresh {
-            dash.apply(load(http, base, token, dash.selected_id()).await);
-            next_refresh = Instant::now() + REFRESH;
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let input = tx.clone();
+    // `event::read` blocks, so it gets its own thread. The thread ends when
+    // the loop below is gone and a send fails.
+    std::thread::spawn(move || {
+        loop {
+            let event = event::read();
+            let failed = event.is_err();
+            if input.send(Msg::Input(event)).is_err() || failed {
+                return;
+            }
         }
+    });
+    let mut refreshing = false;
+    let mut refresh_again = false;
+    let mut ticker = tokio::time::interval(REFRESH);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let spawn_refresh = |selected: Option<String>| {
+        let (tx, http, base, token) = (
+            tx.clone(),
+            http.clone(),
+            base.to_string(),
+            token.to_string(),
+        );
+        tokio::spawn(async move {
+            let refresh = load(&http, &base, &token, selected.as_deref()).await;
+            let _ = tx.send(Msg::Refreshed(refresh));
+        });
+    };
+    loop {
         terminal.draw(|frame| render(frame, dash)).map_err(|err| {
             eprintln!("error: {err}");
             ExitCode::FAILURE
         })?;
-        let wait = next_refresh.saturating_duration_since(Instant::now());
-        if !event::poll(wait).map_err(io_exit)? {
-            continue;
-        }
-        let Event::Key(key) = event::read().map_err(io_exit)? else {
-            continue;
+        let msg = tokio::select! {
+            _ = ticker.tick() => None,
+            msg = rx.recv() => msg,
         };
-        if key.kind != KeyEventKind::Press {
-            continue;
-        }
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-            return Ok(());
-        }
-        dash.action_error = None;
-        match on_key(dash, key.code) {
-            Effect::Quit => return Ok(()),
-            Effect::None => {}
-            Effect::Refresh => next_refresh = Instant::now(),
-            Effect::Post(path) => {
-                if let Err(err) = post(http, base, token, &path).await {
+        let mut want_refresh = false;
+        match msg {
+            None => want_refresh = true,
+            Some(Msg::Refreshed(refresh)) => {
+                dash.apply(refresh);
+                refreshing = false;
+                want_refresh = std::mem::take(&mut refresh_again);
+            }
+            Some(Msg::Detail(id, detail)) => dash.apply_detail(&id, detail),
+            Some(Msg::Posted(result)) => {
+                if let Err(err) = result {
                     dash.action_error = Some(err);
                 }
-                next_refresh = Instant::now();
+                want_refresh = true;
+            }
+            Some(Msg::Input(event)) => {
+                let Event::Key(key) = event.map_err(io_exit)? else {
+                    continue;
+                };
+                if key.kind != KeyEventKind::Press {
+                    continue;
+                }
+                if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+                    return Ok(());
+                }
+                dash.action_error = None;
+                match on_key(dash, key.code) {
+                    Effect::Quit => return Ok(()),
+                    Effect::None => {}
+                    Effect::Refresh => want_refresh = true,
+                    Effect::Select => {
+                        if let Some(id) = dash.selected_id().map(str::to_string) {
+                            let (tx, http, base, token) = (
+                                tx.clone(),
+                                http.clone(),
+                                base.to_string(),
+                                token.to_string(),
+                            );
+                            tokio::spawn(async move {
+                                let detail = load_detail(&http, &base, &token, &id).await;
+                                let _ = tx.send(Msg::Detail(id, detail));
+                            });
+                        }
+                    }
+                    Effect::Post(path) => {
+                        let (tx, http, base, token) = (
+                            tx.clone(),
+                            http.clone(),
+                            base.to_string(),
+                            token.to_string(),
+                        );
+                        tokio::spawn(async move {
+                            let _ = tx.send(Msg::Posted(post(&http, &base, &token, &path).await));
+                        });
+                    }
+                }
+            }
+        }
+        if want_refresh {
+            // One refresh at a time; a request made meanwhile runs after it.
+            if refreshing {
+                refresh_again = true;
+            } else {
+                refreshing = true;
+                spawn_refresh(dash.selected_id().map(str::to_string));
             }
         }
     }
@@ -144,15 +230,10 @@ fn on_key(dash: &mut Dashboard, code: KeyCode) -> Effect {
         KeyCode::Char('q') | KeyCode::Esc => Effect::Quit,
         KeyCode::Char('r') => Effect::Refresh,
         KeyCode::Char('j') | KeyCode::Down => {
-            if !dash.groups.is_empty() {
-                dash.selected = (dash.selected + 1).min(dash.groups.len() - 1);
-            }
-            Effect::Refresh
+            let last = dash.groups.len().saturating_sub(1);
+            dash.select((dash.selected + 1).min(last))
         }
-        KeyCode::Char('k') | KeyCode::Up => {
-            dash.selected = dash.selected.saturating_sub(1);
-            Effect::Refresh
-        }
+        KeyCode::Char('k') | KeyCode::Up => dash.select(dash.selected.saturating_sub(1)),
         KeyCode::Char('s') => dash
             .selected_id()
             .map(|id| Effect::Post(format!("/v1/groups/{id}/start")))
@@ -241,9 +322,10 @@ fn render(frame: &mut Frame, dash: &Dashboard) {
     .block(Block::bordered().title("groups"));
     frame.render_widget(table, list_area);
 
-    let detail_text = match &dash.detail {
-        None => "No group selected.".to_string(),
-        Some(detail) => format!(
+    let detail_text = match (&dash.detail, dash.selected_id()) {
+        (_, None) => "No group selected.".to_string(),
+        (None, Some(_)) => "Loading...".to_string(),
+        (Some(detail), Some(_)) => format!(
             "running: {}    lifecycle: {}    recovered: {}\n\
              committed: {}\n\
              fetched: {}\n\
@@ -286,7 +368,10 @@ fn render(frame: &mut Frame, dash: &Dashboard) {
     }
     let detail = Paragraph::new(body)
         .wrap(Wrap { trim: false })
-        .block(Block::bordered().title("diagnostics"));
+        .block(Block::bordered().title(match dash.selected_id() {
+            Some(id) => format!("diagnostics: {id}"),
+            None => "diagnostics".into(),
+        }));
     frame.render_widget(detail, detail_area);
 
     let footer = Paragraph::new("j/k move    s start    p pause    d drain    r refresh    q quit")
@@ -324,6 +409,28 @@ impl Dashboard {
             .map(|group| group.id.as_str())
     }
 
+    /// Move the selection to `index`. The old group's diagnostics are
+    /// dropped at once, so they are never shown under the new name.
+    fn select(&mut self, index: usize) -> Effect {
+        if self.groups.is_empty() || index == self.selected {
+            return Effect::None;
+        }
+        self.selected = index;
+        self.detail = None;
+        Effect::Select
+    }
+
+    /// Diagnostics for `id`, kept only if `id` is still selected.
+    fn apply_detail(&mut self, id: &str, detail: Result<Detail, String>) {
+        if self.selected_id() != Some(id) {
+            return;
+        }
+        match detail {
+            Ok(detail) => self.detail = Some(detail),
+            Err(err) => self.error = Some(err),
+        }
+    }
+
     fn apply(&mut self, refresh: Refresh) {
         let keep = self.selected_id().map(str::to_string);
         self.health = refresh.health;
@@ -334,19 +441,31 @@ impl Dashboard {
         if let Some(groups) = refresh.groups {
             self.groups = groups;
         }
-        self.detail = refresh.detail;
         self.error = refresh.error;
         if self.groups.is_empty() {
             self.selected = 0;
-            return;
+        } else if let Some(index) = keep
+            .as_deref()
+            .and_then(|id| self.groups.iter().position(|group| group.id == id))
+        {
+            self.selected = index;
+        } else {
+            self.selected = self.selected.min(self.groups.len() - 1);
         }
-        if let Some(id) = keep {
-            if let Some(index) = self.groups.iter().position(|group| group.id == id) {
-                self.selected = index;
-                return;
-            }
+        // The refresh may have started before the selection moved; its
+        // diagnostics count only if they are for the group now selected.
+        let fresh = refresh
+            .detail
+            .filter(|detail| Some(detail.group_id.as_str()) == self.selected_id());
+        if fresh.is_some() || self.selected_id().is_none() {
+            self.detail = fresh;
+        } else if self
+            .detail
+            .as_ref()
+            .is_some_and(|detail| Some(detail.group_id.as_str()) != self.selected_id())
+        {
+            self.detail = None;
         }
-        self.selected = self.selected.min(self.groups.len() - 1);
     }
 }
 
@@ -412,22 +531,15 @@ async fn load(http: &reqwest::Client, base: &str, token: &str, selected: Option<
             .and_then(|groups| groups.first())
             .map(|group| group.id.clone())
     });
-    let detail = if let Some(id) = selected {
-        match get_json(http, base, token, &format!("/v1/groups/{id}/diagnostics")).await {
-            Ok(value) => match serde_json::from_value::<DiagnosticsBody>(value) {
-                Ok(body) => Some(body.into_detail()),
-                Err(err) => {
-                    error = Some(format!("diagnostics: {err}"));
-                    None
-                }
-            },
+    let detail = match selected {
+        Some(id) => match load_detail(http, base, token, &id).await {
+            Ok(detail) => Some(detail),
             Err(err) => {
                 error = Some(err);
                 None
             }
-        }
-    } else {
-        None
+        },
+        None => None,
     };
     Refresh {
         health,
@@ -438,6 +550,19 @@ async fn load(http: &reqwest::Client, base: &str, token: &str, selected: Option<
         detail,
         error,
     }
+}
+
+/// One group's diagnostics.
+async fn load_detail(
+    http: &reqwest::Client,
+    base: &str,
+    token: &str,
+    id: &str,
+) -> Result<Detail, String> {
+    let value = get_json(http, base, token, &format!("/v1/groups/{id}/diagnostics")).await?;
+    serde_json::from_value::<DiagnosticsBody>(value)
+        .map(|body| body.into_detail(id))
+        .map_err(|err| format!("diagnostics: {err}"))
 }
 
 async fn post(http: &reqwest::Client, base: &str, token: &str, path: &str) -> Result<(), String> {
@@ -515,8 +640,9 @@ struct DiagnosticsBody {
 }
 
 impl DiagnosticsBody {
-    fn into_detail(self) -> Detail {
+    fn into_detail(self, group_id: &str) -> Detail {
         Detail {
+            group_id: group_id.to_string(),
             running: self.running,
             lifecycle: self.lifecycle,
             committed: cursor_text(&self.committed_cursor),
@@ -573,6 +699,7 @@ mod tests {
             },
         ];
         dash.detail = Some(Detail {
+            group_id: "alpha".into(),
             running: true,
             lifecycle: "Running".into(),
             committed: "[{\"U64\":4}]".into(),
@@ -625,7 +752,7 @@ mod tests {
         let mut dash = sample();
         assert!(matches!(
             on_key(&mut dash, KeyCode::Char('j')),
-            Effect::Refresh
+            Effect::Select
         ));
         assert_eq!(dash.selected_id(), Some("beta"));
         assert!(matches!(
@@ -634,6 +761,14 @@ mod tests {
         ));
         assert!(matches!(
             on_key(&mut dash, KeyCode::Char('k')),
+            Effect::Select
+        ));
+        assert!(matches!(
+            on_key(&mut dash, KeyCode::Char('k')),
+            Effect::None
+        ));
+        assert!(matches!(
+            on_key(&mut dash, KeyCode::Char('r')),
             Effect::Refresh
         ));
         assert!(matches!(
@@ -699,5 +834,57 @@ mod tests {
         let screen = view(&dash);
         assert!(screen.contains("connection refused"), "{screen}");
         assert!(screen.contains("group is not running"), "{screen}");
+    }
+
+    /// S8: moving the selection drops the old diagnostics at once, and
+    /// diagnostics that arrive for a group no longer selected are ignored.
+    #[test]
+    fn selection_never_shows_another_groups_diagnostics() {
+        let mut dash = sample();
+        let alpha = dash.detail.take().unwrap();
+        dash.detail = Some(Detail {
+            group_id: "alpha".into(),
+            ..alpha
+        });
+        assert!(matches!(
+            on_key(&mut dash, KeyCode::Char('j')),
+            Effect::Select
+        ));
+        assert!(dash.detail.is_none());
+        assert!(view(&dash).contains("Loading"), "{}", view(&dash));
+        assert!(view(&dash).contains("diagnostics: beta"));
+
+        // A load for alpha that was already in flight lands late.
+        let late = |id: &str| {
+            let mut detail = sample().detail.unwrap();
+            detail.group_id = id.into();
+            detail
+        };
+        dash.apply_detail("alpha", Ok(late("alpha")));
+        assert!(dash.detail.is_none());
+        dash.apply(Refresh {
+            health: Probe::Ok,
+            ready: Probe::Ok,
+            version: "0.1.0".into(),
+            running_groups: 1,
+            groups: None,
+            detail: Some(late("alpha")),
+            error: None,
+        });
+        assert!(dash.detail.is_none(), "a refresh started before the move");
+
+        dash.apply_detail("beta", Ok(late("beta")));
+        assert_eq!(dash.detail.as_ref().unwrap().group_id, "beta");
+        // A refresh without diagnostics keeps what is on screen.
+        dash.apply(Refresh {
+            health: Probe::Ok,
+            ready: Probe::Ok,
+            version: "0.1.0".into(),
+            running_groups: 1,
+            groups: None,
+            detail: None,
+            error: Some("diagnostics: timeout".into()),
+        });
+        assert_eq!(dash.detail.as_ref().unwrap().group_id, "beta");
     }
 }

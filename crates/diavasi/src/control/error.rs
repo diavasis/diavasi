@@ -95,7 +95,10 @@ mod tests {
     #[test]
     fn core_errors_map_to_client_statuses() {
         let cases = [
-            (CoreError::InvalidArgument("x"), StatusCode::BAD_REQUEST),
+            (
+                CoreError::InvalidArgument("x".into()),
+                StatusCode::BAD_REQUEST,
+            ),
             (
                 CoreError::InvalidTransition {
                     from: GroupLifecycle::Stopped,

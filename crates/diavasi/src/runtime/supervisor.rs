@@ -40,13 +40,54 @@ struct Retry {
     next_attempt: Instant,
 }
 
+/// Why a group task last stopped. `Display` gives the text the API reports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StopReason {
+    /// An operator pause (`paused`).
+    Paused,
+    /// A drain finished (`drained`).
+    Drained,
+    /// The server shut down (`shutdown`).
+    Shutdown,
+    /// The task was aborted (`task aborted`).
+    Aborted,
+    /// The task panicked (`task panicked`).
+    Panicked,
+    /// The source could not be reached; the group is retried.
+    SourceUnavailable(String),
+    /// The data broke the source contract; the group is `Failed` until an
+    /// operator starts it.
+    BadData(String),
+    /// Another runtime error; the group is retried.
+    Error(String),
+    /// A restart could not open the source; it is retried.
+    RestartFailed(String),
+}
+
+impl std::fmt::Display for StopReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Paused => f.write_str("paused"),
+            Self::Drained => f.write_str("drained"),
+            Self::Shutdown => f.write_str("shutdown"),
+            Self::Aborted => f.write_str("task aborted"),
+            Self::Panicked => f.write_str("task panicked"),
+            Self::SourceUnavailable(text)
+            | Self::BadData(text)
+            | Self::Error(text)
+            | Self::RestartFailed(text) => f.write_str(text),
+        }
+    }
+}
+
 /// Why the last group task exited, and whether the supervisor respawned it.
 /// Process-local. A process restart clears it. The durable lifecycle and
 /// checkpoint remain in the store.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GroupOutcome {
-    /// `paused`, `drained`, `shutdown`, `stopped`, `task aborted`, `task panicked`, or a source error text.
-    pub last_stop_reason: String,
+    /// Why the task last stopped. `None` until a restart without a recorded
+    /// stop (a group recovered before this process saw it stop).
+    pub last_stop_reason: Option<StopReason>,
     /// True after the supervisor restarted the group in this process.
     pub recovered: bool,
 }
@@ -235,7 +276,7 @@ impl<S: StateStore + 'static> GroupSupervisor<S> {
 
     /// Groups whose task is running.
     pub fn list_running(&self) -> Vec<GroupId> {
-        self.live().map(|g| g.handle.group_id.clone()).collect()
+        self.live().map(|g| g.handle.group_id().clone()).collect()
     }
 
     /// The handle of a group whose task is still running.
@@ -260,7 +301,7 @@ impl<S: StateStore + 'static> GroupSupervisor<S> {
     /// for example at boot while its database is down.
     pub fn retry_later(&mut self, id: &GroupId, reason: String) {
         if !self.is_active(id) {
-            self.schedule_retry(id, 1, reason);
+            self.schedule_retry(id, 1, StopReason::RestartFailed(reason));
         }
     }
 
@@ -301,7 +342,7 @@ impl<S: StateStore + 'static> GroupSupervisor<S> {
                         .outcomes
                         .entry(opened.id.as_str().to_string())
                         .or_insert_with(|| GroupOutcome {
-                            last_stop_reason: String::new(),
+                            last_stop_reason: None,
                             recovered: false,
                         });
                     outcome.recovered = true;
@@ -335,7 +376,11 @@ impl<S: StateStore + 'static> GroupSupervisor<S> {
                             failures,
                             "group restart failed"
                         );
-                        self.schedule_retry(&failed.id, failures, failed.error.to_string());
+                        self.schedule_retry(
+                            &failed.id,
+                            failures,
+                            StopReason::RestartFailed(failed.error.to_string()),
+                        );
                     }
                 }
                 Err(failed.error)
@@ -415,7 +460,7 @@ impl<S: StateStore + 'static> GroupSupervisor<S> {
             let Some(mut running) = self.groups.remove(&key) else {
                 continue;
             };
-            let id = running.handle.group_id.clone();
+            let id = running.handle.group_id().clone();
             let result = (&mut running.join)
                 .now_or_never()
                 .expect("a finished task has its result");
@@ -431,6 +476,7 @@ impl<S: StateStore + 'static> GroupSupervisor<S> {
                         "group stopped: the source broke its contract; start it again after fixing the data or the spec"
                     );
                     self.record_failed(&id);
+                    self.observe.record_contract_failure(id.as_str());
                     self.set_outcome(&id, reason, false);
                 }
                 _ => {
@@ -475,7 +521,7 @@ impl<S: StateStore + 'static> GroupSupervisor<S> {
         for plan in self.reap() {
             let opened = plan.open().await;
             if let Ok(handle) = self.finish_start(opened) {
-                recovered.push(handle.group_id.clone());
+                recovered.push(handle.group_id().clone());
             }
         }
         Ok(recovered)
@@ -515,7 +561,7 @@ impl<S: StateStore + 'static> GroupSupervisor<S> {
         for running in groups {
             if !running.join.is_finished() {
                 if let Err(err) = running.handle.shutdown().await {
-                    tracing::warn!(group_id = %running.handle.group_id, error = %err, "group did not save progress at shutdown");
+                    tracing::warn!(group_id = %running.handle.group_id(), error = %err, "group did not save progress at shutdown");
                     running.abort.abort();
                 }
             }
@@ -548,7 +594,7 @@ impl<S: StateStore + 'static> GroupSupervisor<S> {
         }
     }
 
-    fn schedule_retry(&mut self, id: &GroupId, failures: u32, reason: String) {
+    fn schedule_retry(&mut self, id: &GroupId, failures: u32, reason: StopReason) {
         self.retries.insert(
             id.as_str().to_string(),
             Retry {
@@ -559,11 +605,11 @@ impl<S: StateStore + 'static> GroupSupervisor<S> {
         self.set_outcome(id, reason, false);
     }
 
-    fn set_outcome(&mut self, id: &GroupId, reason: String, recovered: bool) {
+    fn set_outcome(&mut self, id: &GroupId, reason: StopReason, recovered: bool) {
         self.outcomes.insert(
             id.as_str().to_string(),
             GroupOutcome {
-                last_stop_reason: reason,
+                last_stop_reason: Some(reason),
                 recovered,
             },
         );
@@ -574,11 +620,11 @@ impl<S: StateStore + 'static> GroupSupervisor<S> {
             .outcomes
             .get(id.as_str())
             .is_some_and(|outcome| outcome.recovered);
-        self.set_outcome(id, "paused".into(), recovered);
+        self.set_outcome(id, StopReason::Paused, recovered);
     }
 
     fn insert_spawned(&mut self, spawned: SpawnedGroup, failures: u32) {
-        let key = spawned.handle.group_id.as_str().to_string();
+        let key = spawned.handle.group_id().as_str().to_string();
         self.groups.insert(
             key,
             RunningGroup {
@@ -655,14 +701,19 @@ fn adapter_label<S: StateStore>(store: &S, id: &GroupId) -> RuntimeResult<String
     Ok(connection.kind)
 }
 
-fn exit_reason(result: &Result<RuntimeResult<GroupExit>, tokio::task::JoinError>) -> String {
+fn exit_reason(result: &Result<RuntimeResult<GroupExit>, tokio::task::JoinError>) -> StopReason {
     match result {
-        Ok(Ok(GroupExit::Paused)) => "paused".into(),
-        Ok(Ok(GroupExit::Drained)) => "drained".into(),
-        Ok(Ok(GroupExit::Shutdown)) => "shutdown".into(),
-        Ok(Err(RuntimeError::Source(err))) => err.message().to_string(),
-        Ok(Err(err)) => err.to_string(),
-        Err(err) if err.is_panic() => "task panicked".into(),
-        Err(_) => "task aborted".into(),
+        Ok(Ok(GroupExit::Paused)) => StopReason::Paused,
+        Ok(Ok(GroupExit::Drained)) => StopReason::Drained,
+        Ok(Ok(GroupExit::Shutdown)) => StopReason::Shutdown,
+        Ok(Err(RuntimeError::Source(SourceError::Transient(text)))) => {
+            StopReason::SourceUnavailable(text.clone())
+        }
+        Ok(Err(RuntimeError::Source(SourceError::Contract(text)))) => {
+            StopReason::BadData(text.clone())
+        }
+        Ok(Err(err)) => StopReason::Error(err.to_string()),
+        Err(err) if err.is_panic() => StopReason::Panicked,
+        Err(_) => StopReason::Aborted,
     }
 }

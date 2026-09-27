@@ -46,26 +46,6 @@ pub enum RuntimeCommand {
         /// Receives the result after the checkpoint is written (see `checkpoint_interval`).
         reply: oneshot::Sender<RuntimeResult<()>>,
     },
-    /// Read the committed cursor.
-    SnapshotCursor {
-        /// Receives the cursor.
-        reply: oneshot::Sender<RuntimeResult<LogicalCursor>>,
-    },
-    /// Read buffer and in-flight counts.
-    BufferStats {
-        /// Receives the counts.
-        reply: oneshot::Sender<RuntimeResult<BufferStats>>,
-    },
-    /// Read the lifecycle.
-    Lifecycle {
-        /// Receives the lifecycle.
-        reply: oneshot::Sender<RuntimeResult<GroupLifecycle>>,
-    },
-    /// List the joined consumers.
-    ListConsumers {
-        /// Receives the sorted consumer ids.
-        reply: oneshot::Sender<RuntimeResult<Vec<ConsumerId>>>,
-    },
     /// Read positions, counts, and consumers in one call.
     LiveSnapshot {
         /// Receives the snapshot.
@@ -117,6 +97,12 @@ pub struct LiveSnapshot {
     pub buffer_bytes: usize,
     /// Records assigned and not yet acked.
     pub inflight_records: usize,
+    /// Batches assigned and not yet acked.
+    pub inflight_batches: usize,
+    /// The buffer record cap.
+    pub max_buffer_records: usize,
+    /// The buffer byte cap.
+    pub max_buffer_bytes: usize,
     /// Joined consumers, sorted.
     pub consumers: Vec<ConsumerId>,
 }

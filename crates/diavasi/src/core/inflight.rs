@@ -50,7 +50,10 @@ impl InFlightTracker {
     /// Track a new assignment. Fails when its batch id is already in flight.
     pub fn insert(&mut self, assignment: Assignment) -> CoreResult<()> {
         if self.by_batch.contains_key(&assignment.batch_id) {
-            return Err(CoreError::InvalidArgument("duplicate batch id"));
+            return Err(CoreError::InvalidArgument(format!(
+                "batch {} is already in flight",
+                assignment.batch_id
+            )));
         }
         self.records += assignment.records.len();
         self.by_batch.insert(assignment.batch_id, assignment);

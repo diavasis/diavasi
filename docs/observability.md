@@ -39,11 +39,14 @@ Labels `group_id` and `adapter` are on the record counters. `adapter` is `synthe
 | `diavasi_group_recovery_failures_total` | counter | `group_id` |
 | `diavasi_consumer_disconnects_total` | counter | `group_id` |
 | `diavasi_group_stale_acks_total` | counter | `group_id` |
+| `diavasi_group_contract_failures_total` | counter | `group_id` |
 | `diavasi_adapter_errors_total` | counter | `group_id`, `adapter` |
 
 `diavasi_group_checkpoint_lag` is records sitting in the buffer plus records assigned to a consumer and not yet acked. It is not a distance between cursor tuples. A slow consumer grows this number until the buffer cap stops further fetches. The buffer gauge stays at or under `max_buffer_records`. In-flight records sit outside that cap, bounded by the batches already assigned.
 
 `diavasi_group_restarts_total` counts successful supervisor respawns after an unexpected task exit (transient source error, abort, panic). A pause does not increment it. `diavasi_group_recovery_failures_total` counts restarts that could not open the source; each is retried with a longer delay, from 250 ms up to 30 s.
+
+`diavasi_group_contract_failures_total` counts groups stopped as `Failed` because the data broke the source contract. These are not restarted, so alert on any increase: the group stays stopped until an operator fixes the data or the spec and starts it.
 
 ## Diagnostics
 

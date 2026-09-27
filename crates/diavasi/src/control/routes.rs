@@ -45,6 +45,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/groups/{id}/consumers", get(list_consumers))
         .route("/v1/groups/{id}/checkpoint", get(checkpoint))
         .route("/v1/groups/{id}/diagnostics", get(diagnostics))
+        .route("/v1/store/backup", post(backup))
         .layer(middleware::from_fn_with_state(
             Arc::clone(&state.auth),
             require_bearer,
@@ -169,6 +170,13 @@ async fn checkpoint(
     Path(id): Path<String>,
 ) -> ControlResult<Json<super::dto::CheckpointView>> {
     Ok(Json(state.service.checkpoint(&id).await?))
+}
+
+async fn backup(
+    State(state): State<AppState>,
+    Json(req): Json<super::dto::BackupRequest>,
+) -> ControlResult<Json<super::dto::BackupView>> {
+    Ok(Json(state.service.backup(req)?))
 }
 
 async fn diagnostics(

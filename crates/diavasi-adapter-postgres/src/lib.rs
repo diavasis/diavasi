@@ -13,7 +13,8 @@
 //!     source_factory: Some(Arc::new(diavasi_adapter_postgres::PostgresFactory)),
 //!     ..config
 //! })
-//! .await
+//! .await?;
+//! # Ok(())
 //! # }
 //! ```
 //!

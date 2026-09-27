@@ -26,6 +26,39 @@ pub fn check_keys(value: &serde_json::Value, allowed: &[&str], what: &str) -> Re
     }
 }
 
+/// Deserialize the JSON `value` into `T`, naming the object `what` in the
+/// error. Adapters derive `Deserialize` with `deny_unknown_fields` on their
+/// raw spec types, so a misspelled key fails here with the key's name.
+///
+/// ```
+/// #[derive(Debug, serde::Deserialize)]
+/// #[serde(deny_unknown_fields)]
+/// struct Spec {
+///     table: String,
+/// }
+/// let spec: Spec = diavasi::runtime::parse_json(&serde_json::json!({"table": "t"}), "source_spec")?;
+/// assert_eq!(spec.table, "t");
+/// let typo = diavasi::runtime::parse_json::<Spec>(&serde_json::json!({"tabel": "t"}), "source_spec");
+/// assert!(typo.unwrap_err().contains("tabel"));
+/// let wrong = diavasi::runtime::parse_json::<Spec>(&serde_json::json!({"table": 1}), "source_spec");
+/// assert!(wrong.unwrap_err().starts_with("source_spec.table: invalid type"));
+/// # Ok::<(), String>(())
+/// ```
+pub fn parse_json<T: serde::de::DeserializeOwned>(
+    value: &serde_json::Value,
+    what: &str,
+) -> Result<T, String> {
+    serde_path_to_error::deserialize(value).map_err(|err| {
+        let path = err.path().to_string();
+        let inner = err.into_inner();
+        if path == "." {
+            format!("{what}: {inner}")
+        } else {
+            format!("{what}.{path}: {inner}")
+        }
+    })
+}
+
 /// Everything an adapter needs to open or validate a group source.
 pub struct SourceOpen {
     /// The connection: kind and non-secret `config_json`.
