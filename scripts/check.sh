@@ -29,8 +29,8 @@ fi
 export DIAVASI_REQUIRE_DB=1
 
 # Library line coverage stays near 88% when the Postgres adapter tests run.
-# The Stage 0 transport harness and the Stage 7 end-to-end bench are not
-# exercised by `cargo test`, so they are left out of this number.
+# The transport benchmark (its harness and protocol) and the end-to-end bench
+# are not exercised by `cargo test`, so they are left out of this number.
 min_line_coverage=85
 
 echo "==> fmt"
@@ -51,6 +51,6 @@ cargo deny check
 
 echo "==> coverage"
 cargo llvm-cov --workspace --all-features \
-  --ignore-filename-regex 'transport_bench|e2e_bench' \
+  --ignore-filename-regex 'transport_bench|bench_protocol|e2e_bench' \
   --summary-only \
   --fail-under-lines "$min_line_coverage"

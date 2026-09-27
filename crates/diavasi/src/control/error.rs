@@ -81,3 +81,91 @@ impl IntoResponse for ControlError {
             .into_response()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::GroupLifecycle;
+
+    fn status(err: ControlError) -> StatusCode {
+        err.into_response().status()
+    }
+
+    /// Every engine error maps to a client status, never 500.
+    #[test]
+    fn core_errors_map_to_client_statuses() {
+        let cases = [
+            (CoreError::InvalidArgument("x"), StatusCode::BAD_REQUEST),
+            (
+                CoreError::InvalidTransition {
+                    from: GroupLifecycle::Stopped,
+                    to: GroupLifecycle::Draining,
+                },
+                StatusCode::CONFLICT,
+            ),
+            (
+                CoreError::NotRunning(GroupLifecycle::Stopped),
+                StatusCode::CONFLICT,
+            ),
+            (
+                CoreError::DuplicateConsumer("c".into()),
+                StatusCode::CONFLICT,
+            ),
+            (
+                CoreError::UnknownConsumer("c".into()),
+                StatusCode::NOT_FOUND,
+            ),
+            (CoreError::UnknownBatch(1), StatusCode::NOT_FOUND),
+            (CoreError::BufferFull, StatusCode::CONFLICT),
+            (CoreError::NoWork, StatusCode::CONFLICT),
+        ];
+        for (err, expected) in cases {
+            assert_eq!(
+                status(RuntimeError::Core(err.clone()).into()),
+                expected,
+                "{err}"
+            );
+            assert_eq!(
+                status(StoreError::Core(err.clone()).into()),
+                expected,
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn service_errors_map_to_their_statuses() {
+        assert_eq!(
+            status(ControlError::BadRequest("x".into())),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            status(ControlError::Conflict("x".into())),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            status(ControlError::NotFound("x".into())),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            status(ControlError::Internal("x".into())),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+        assert_eq!(
+            status(StoreError::GroupExists("g".into()).into()),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            status(StoreError::GroupNotFound("g".into()).into()),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            status(RuntimeError::ChannelFull.into()),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(
+            status(RuntimeError::GroupNotRunning("g".into()).into()),
+            StatusCode::CONFLICT
+        );
+    }
+}

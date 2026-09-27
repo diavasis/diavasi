@@ -48,6 +48,10 @@ struct Args {
     output: PathBuf,
     #[arg(long, default_value = "run")]
     label: String,
+    /// Write checkpoints at most once per this many milliseconds. 0 writes
+    /// before each ack is answered.
+    #[arg(long, default_value_t = 0)]
+    checkpoint_interval_ms: u64,
 }
 
 #[tokio::main]
@@ -140,7 +144,7 @@ async fn bench(
         tls_cert: None,
         tls_key: None,
         source_factory: Some(Arc::new(PostgresFactory)),
-        checkpoint_interval: std::time::Duration::ZERO,
+        checkpoint_interval: std::time::Duration::from_millis(args.checkpoint_interval_ms),
     };
     let server = tokio::spawn(async move {
         if let Err(err) = serve(config).await {

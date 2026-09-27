@@ -199,7 +199,7 @@ Language, install, and the Compose profile for each SDK are in [clients/README.m
 | v0.3.0        | Supervised per-group Tokio runtime                                                                              | Done    |
 | v0.4.0        | HTTP control plane + CLI                                                                                        | Done    |
 | v0.5.0        | Protocol v1 data plane (TLS gRPC, auth, backpressure)                                                           | Done    |
-| v0.5.0/Demo   | Livebook: server, synthetic group, Python and Elixir clients ([notebook](https://github.com/diavasis/diavasi-elixir/blob/main/notebooks/demo.livemd)) | Next    |
+| v0.5.0/Demo   | Livebook: server, synthetic group, Python and Elixir clients ([notebook](https://github.com/diavasis/diavasi-elixir/blob/main/notebooks/demo.livemd)) | Done    |
 | v0.6.0        | PostgreSQL adapter. After it lands, Docker Compose replaces the synthetic source                                | Done    |
 | v0.7.0        | End-to-end Postgres benchmarks / resource model                                                                 | Done    |
 | v0.8.0        | MongoDB adapter. Object `_id` or a declared sort; resume is a `find` keyset                                     | Done    |

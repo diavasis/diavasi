@@ -51,7 +51,7 @@ A batch that times out, or an assign whose caller is gone, returns to the buffer
 
 On a release build against Compose Postgres (`docs/bench/stage-07.md`):
 
-- A 200-record batch keeps the pipeline near 1.6e4 records/s for 64-byte payloads. A 20-record batch drops that to about 1.8e3 records/s, because each ack that extends the cursor was its own redb transaction. Acks from several consumers now share a write, and `--checkpoint-interval-ms` batches writes further.
+- A 200-record batch keeps the pipeline near 1.6e4 records/s for 64-byte payloads. A 20-record batch drops that to about 1.8e3 records/s, because each ack that extends the cursor was its own redb transaction. Acks from several consumers now share a write (4 consumers at batch 20: about 1.8e3 to 4.1e3 records/s), and `--checkpoint-interval-ms 20` takes the write off the ack path (about 1.5e5 records/s at batch 20). See [docs/bench/stage-07.md](bench/stage-07.md).
 - Payload width from 64 to 1024 bytes changes records/s only slightly and scales bytes/s with the payload.
 - Four consumers on one group, and two groups, do not add Postgres connections. They add streams and, for two groups, a second owner and a second connection.
 - An assign that lost its caller used to leave the batch in flight until `batch_timeout`. The data plane now keeps that assign running across heartbeats, and the owner returns the batch to the buffer if the reply is gone. Throughput is no longer the batch timeout.

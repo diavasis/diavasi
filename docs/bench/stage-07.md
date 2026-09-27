@@ -52,3 +52,23 @@ cargo run --release -p diavasi-bench --bin diavasi-e2e-bench -- \
 The batch-size row is the expensive axis. A 20-record batch does ten times as many contiguous checkpoints as a 200-record batch, and records/s fall by about the same factor. Payload width and a second group do not. No further change was made to the fetch interval or the keyset SQL.
 
 Full rows, including buffer and batch settings, are in [stage-07.jsonl](stage-07.jsonl).
+
+## After the v0.12.0 review fixes
+
+Same machine (Apple M1 Max, 64GB), same Compose Postgres, release builds. `main` at `1a98763` against the review-fixes branch, run back to back, two runs each, mean records/s. 20_000 rows of 64 bytes, one group. Every run delivered all 20_000 distinct ids; the four-consumer runs delivered 20_060, 60 of them at-least-once redeliveries as consumers left.
+
+| Configuration | `main` | Branch | Change |
+| --- | --- | --- | --- |
+| batch 200, 1 consumer | 15_858 | 20_030 | 1.26× |
+| batch 20, 1 consumer | 1_679 | 2_172 | 1.29× |
+| batch 20, 4 consumers, `--max-in-flight 4` | 1_801 | 4_086 | 2.27× |
+| batch 20, 1 consumer, `--checkpoint-interval-ms 20` | | 149_504 | |
+| batch 20, 4 consumers, `--checkpoint-interval-ms 20` | | 317_948 | |
+
+Default durability still writes the checkpoint before each ack is answered. The four-consumer gain comes from acks that wait together sharing one write, and from the owner task no longer waiting on the Postgres query. With `--checkpoint-interval-ms 20` the checkpoint is written at most every 20 ms, so a crash can replay up to 20 ms of acked records; the redb commit is then no longer on the ack path.
+
+```bash
+cargo run --release -p diavasi-bench --bin diavasi-e2e-bench -- \
+  --label b20-c4-int20 --batch-max-records 20 --consumers 4 --max-in-flight 4 \
+  --checkpoint-interval-ms 20 --output docs/bench/stage-07.jsonl
+```
