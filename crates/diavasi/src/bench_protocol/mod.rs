@@ -1,6 +1,7 @@
-//! Transport-neutral Stage 0 benchmark protocol.
+//! The transport benchmark's wire protocol (`diavasi.bench.v1`).
 //!
-//! This is deliberately small. Production protocol v1 is frozen in Stage 5.
+//! Used only by [`crate::transport_bench`]. The production protocol is
+//! [`crate::dataplane`] (`diavasi.data.v1`).
 
 pub mod pb {
     // tonic::Status is large; generated gRPC stubs trip clippy::result_large_err on 1.98+.
@@ -88,62 +89,6 @@ mod tests {
                 assert_eq!(j.consumer_id, "c1");
             }
             other => panic!("unexpected body: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn constructors_cover_all_envelope_bodies() {
-        let cases: Vec<Envelope> = vec![
-            Envelope::join_group("g", "c"),
-            Envelope::joined("g", "c"),
-            Envelope::record_batch(RecordBatch {
-                batch_id: 9,
-                records: vec![Record {
-                    record_id: 1,
-                    payload: b"p".to_vec(),
-                }],
-                sent_at_unix_ns: 0,
-            }),
-            Envelope::ack(42),
-            Envelope::flow_control(8),
-            Envelope::heartbeat(),
-            Envelope::error("boom"),
-        ];
-
-        for env in cases {
-            assert_eq!(env.version, PROTOCOL_VERSION);
-            assert!(env.body.is_some());
-            let bytes = env.encode_to_vec();
-            let decoded = Envelope::decode(bytes.as_slice()).unwrap();
-            assert_eq!(decoded.version, PROTOCOL_VERSION);
-            assert_eq!(decoded.body, env.body);
-        }
-    }
-
-    #[test]
-    fn joined_ack_flow_heartbeat_error_fields() {
-        match Envelope::joined("g1", "c1").body {
-            Some(envelope::Body::Joined(j)) => {
-                assert_eq!(j.group_id, "g1");
-                assert_eq!(j.consumer_id, "c1");
-            }
-            other => panic!("{other:?}"),
-        }
-        match Envelope::ack(7).body {
-            Some(envelope::Body::Ack(a)) => assert_eq!(a.batch_id, 7),
-            other => panic!("{other:?}"),
-        }
-        match Envelope::flow_control(3).body {
-            Some(envelope::Body::FlowControl(f)) => assert_eq!(f.max_in_flight, 3),
-            other => panic!("{other:?}"),
-        }
-        match Envelope::heartbeat().body {
-            Some(envelope::Body::Heartbeat(_)) => {}
-            other => panic!("{other:?}"),
-        }
-        match Envelope::error("x").body {
-            Some(envelope::Body::Error(e)) => assert_eq!(e.message, "x"),
-            other => panic!("{other:?}"),
         }
     }
 

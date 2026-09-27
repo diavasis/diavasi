@@ -8,17 +8,19 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use tower_http::limit::RequestBodyLimitLayer;
 
-use super::auth::{BearerTokenAuth, require_bearer};
+use super::auth::{AuthValidator, require_bearer};
 use super::dto::{ConnectionCreateRequest, GroupCreateRequest};
 use super::error::ControlResult;
 use super::service::{ControlService, MAX_CONFIG_JSON_BYTES, MAX_SECRET_BYTES};
 
 const BODY_LIMIT: usize = MAX_CONFIG_JSON_BYTES + MAX_SECRET_BYTES + 8 * 1024;
 
+/// Shared state of the HTTP handlers.
 #[derive(Clone)]
 pub struct AppState {
     pub service: Arc<ControlService>,
-    pub auth: BearerTokenAuth,
+    /// Checks the bearer token on every route except `/health` and `/ready`.
+    pub auth: Arc<dyn AuthValidator>,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -43,8 +45,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/groups/{id}/checkpoint", get(checkpoint))
         .route("/v1/groups/{id}/diagnostics", get(diagnostics))
         .layer(middleware::from_fn_with_state(
-            state.auth.clone(),
-            require_bearer::<BearerTokenAuth>,
+            Arc::clone(&state.auth),
+            require_bearer,
         ));
 
     Router::new()

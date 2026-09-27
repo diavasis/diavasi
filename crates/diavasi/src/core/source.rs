@@ -4,11 +4,14 @@ use futures::future::BoxFuture;
 use super::ordering::{LogicalCursor, OrderingValue, is_after};
 use super::record::Record;
 
-/// Deterministic in-memory ordered source for Stage 1.
+/// Deterministic in-memory source: records `1..=total_records`, ordered by
+/// id, each with the same `payload_size`-byte payload.
 #[derive(Debug, Clone)]
 pub struct SyntheticSource {
     total_records: u64,
     payload_size: usize,
+    /// One payload shared by every record.
+    payload: Bytes,
 }
 
 impl SyntheticSource {
@@ -16,6 +19,7 @@ impl SyntheticSource {
         Self {
             total_records,
             payload_size,
+            payload: Bytes::from(vec![0xAB; payload_size]),
         }
     }
 
@@ -33,7 +37,7 @@ impl SyntheticSource {
         }
         Some(Record {
             ordering: OrderingValue::single_u64(id),
-            payload: Bytes::from(vec![0xAB; self.payload_size]),
+            payload: self.payload.clone(),
         })
     }
 
@@ -66,10 +70,36 @@ impl SyntheticSource {
     }
 }
 
-/// Failure while reading an external source.
-#[derive(Debug, thiserror::Error)]
-#[error("{0}")]
-pub struct SourceError(pub String);
+/// Failure while reading an external source. The kind decides what the
+/// supervisor does next.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SourceError {
+    /// The source could not be reached or did not answer: a dropped
+    /// connection, a timeout, a server that is down. The group restarts with
+    /// growing delays until the source answers.
+    #[error("{0}")]
+    Transient(String),
+    /// The data broke the declared contract: a value of the wrong type, a
+    /// record that cannot be decoded, a record that is not after the cursor,
+    /// entries removed before delivery. Reading again returns the same data,
+    /// so the group stops until an operator fixes the source or the spec.
+    #[error("{0}")]
+    Contract(String),
+}
+
+impl SourceError {
+    /// The error text without its kind.
+    pub fn message(&self) -> &str {
+        match self {
+            Self::Transient(message) | Self::Contract(message) => message,
+        }
+    }
+
+    /// True for [`SourceError::Transient`].
+    pub fn is_transient(&self) -> bool {
+        matches!(self, Self::Transient(_))
+    }
+}
 
 /// Async ordered read used by adapters. Synthetic groups keep using [`SyntheticSource::fetch_after`] directly.
 pub trait RecordSource: Send {

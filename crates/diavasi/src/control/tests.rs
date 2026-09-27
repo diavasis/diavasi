@@ -19,7 +19,7 @@ fn test_state(token: &str) -> (tempfile::TempDir, AppState) {
     let service = Arc::new(ControlService::new(store, key, "127.0.0.1:0".to_string()));
     let state = AppState {
         service,
-        auth: BearerTokenAuth::new(token.to_string()),
+        auth: Arc::new(BearerTokenAuth::new(token.to_string())),
     };
     (dir, state)
 }
@@ -153,7 +153,7 @@ async fn group_lifecycle_http() {
         max_buffer_records: 64,
         max_buffer_bytes: 64 * 1024,
         batch_max_records: 5,
-        batch_timeout_ms: 50,
+        batch_timeout_ms: 100,
         ordering_contract: "synthetic-u64".into(),
         connection_id: None,
         source_spec: None,
@@ -320,6 +320,7 @@ async fn serve_writes_certs_and_rejects_a_taken_data_port() {
         tls_cert: Some(dir.path().join("only-cert.pem")),
         tls_key: None,
         source_factory: None,
+        checkpoint_interval: std::time::Duration::ZERO,
     })
     .await
     .unwrap_err();
@@ -341,6 +342,7 @@ async fn serve_writes_certs_and_rejects_a_taken_data_port() {
         tls_cert: None,
         tls_key: None,
         source_factory: None,
+        checkpoint_interval: std::time::Duration::ZERO,
     };
     let err = serve(config.clone()).await.unwrap_err();
     assert!(store.exists(), "{err}");
@@ -353,4 +355,474 @@ async fn serve_writes_certs_and_rejects_a_taken_data_port() {
     let err = serve(with_tls).await.unwrap_err();
     let _ = err;
     drop(hold);
+}
+
+// Regression tests for the v0.12.0 review. Each name carries its finding id.
+
+use std::time::{Duration, Instant};
+
+use futures::future::BoxFuture;
+
+use crate::core::{GroupId, RecordSource, SyntheticSource};
+use crate::runtime::{SourceFactory, SourceOpen};
+
+/// Opens a small synthetic source after an optional delay.
+struct TestFactory {
+    open_delay: Duration,
+}
+
+impl SourceFactory for TestFactory {
+    fn kind(&self) -> &str {
+        "test"
+    }
+
+    fn open(
+        &self,
+        _request: SourceOpen,
+    ) -> BoxFuture<'static, Result<Box<dyn RecordSource>, String>> {
+        let delay = self.open_delay;
+        Box::pin(async move {
+            tokio::time::sleep(delay).await;
+            Ok(Box::new(SyntheticSource::new(8, 8)) as Box<dyn RecordSource>)
+        })
+    }
+
+    fn validate(&self, _request: SourceOpen) -> BoxFuture<'static, Result<(), String>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+fn synthetic_group(id: &str, total: u64, buffer: usize, batch: usize) -> GroupCreateRequest {
+    GroupCreateRequest {
+        group_id: id.into(),
+        total_records: total,
+        payload_size: 8,
+        max_buffer_records: buffer,
+        max_buffer_bytes: 64 * 1024,
+        batch_max_records: batch,
+        batch_timeout_ms: 5_000,
+        ordering_contract: "synthetic-u64".into(),
+        connection_id: None,
+        source_spec: None,
+    }
+}
+
+async fn with_test_connection(state: &AppState, open_delay: Duration) {
+    state
+        .service
+        .install_source_factory(Arc::new(TestFactory { open_delay }))
+        .await;
+    state
+        .service
+        .create_connection(ConnectionCreateRequest {
+            id: "conn".into(),
+            kind: "test".into(),
+            config_json: serde_json::json!({}),
+            secret: "unused".into(),
+        })
+        .unwrap();
+}
+
+fn adapter_group(id: &str) -> GroupCreateRequest {
+    GroupCreateRequest {
+        connection_id: Some("conn".into()),
+        source_spec: Some(serde_json::json!({})),
+        ..synthetic_group(id, 0, 8, 2)
+    }
+}
+
+async fn view(state: &AppState, method: &str, uri: &str) -> (StatusCode, serde_json::Value) {
+    let (status, body) = oneshot(state.clone(), auth_json(method, uri, "tok", None)).await;
+    let value = serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
+    (status, value)
+}
+
+/// B3: `lifecycle` and `running` agree after create, start, and pause.
+#[tokio::test]
+async fn regress_b03_lifecycle_matches_running() {
+    let (_dir, state) = test_state("tok");
+    state
+        .service
+        .create_group(synthetic_group("g1", 20, 8, 2))
+        .await
+        .unwrap();
+
+    let (_, created) = view(&state, "GET", "/v1/groups/g1").await;
+    assert_eq!(created["running"], false);
+    assert_eq!(created["lifecycle"], "Stopped");
+
+    let (status, started) = view(&state, "POST", "/v1/groups/g1/start").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(started["running"], true);
+    assert_eq!(started["lifecycle"], "Running", "after start: {started}");
+
+    let (status, paused) = view(&state, "POST", "/v1/groups/g1/pause").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(paused["running"], false);
+    assert_eq!(paused["lifecycle"], "Stopped", "after pause: {paused}");
+
+    let (_, listed) = view(&state, "GET", "/v1/groups").await;
+    assert_eq!(
+        listed[0]["lifecycle"], "Stopped",
+        "list after pause: {listed}"
+    );
+    let (_, diag) = view(&state, "GET", "/v1/groups/g1/diagnostics").await;
+    assert_eq!(
+        diag["lifecycle"], "Stopped",
+        "diagnostics after pause: {diag}"
+    );
+}
+
+/// B2: drain delivers what the group already fetched, reads nothing new,
+/// and stops the group when that work is acked.
+#[tokio::test]
+async fn regress_b02_drain_finishes_fetched_work_then_stops() {
+    use crate::core::{ConsumerId, CoreError};
+    use crate::runtime::RuntimeError;
+
+    let (_dir, state) = test_state("tok");
+    let svc = Arc::clone(&state.service);
+    svc.create_group(synthetic_group("g1", 50, 4, 2))
+        .await
+        .unwrap();
+    svc.start_group("g1").await.unwrap();
+    let gid = GroupId::new("g1").unwrap();
+    let handle = svc.supervisor().lock().await.get_handle(&gid).unwrap();
+    let consumer = ConsumerId::new("c1").unwrap();
+    handle.join(consumer.clone()).await.unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let fetched = loop {
+        let snap = handle.live_snapshot().await.unwrap();
+        if snap.buffer_records == 4 {
+            break snap.fetched;
+        }
+        assert!(Instant::now() < deadline, "buffer never filled");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    };
+
+    let (status, _) = view(&state, "POST", "/v1/groups/g1/drain").await;
+    assert_eq!(status, StatusCode::OK);
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match handle.assign(&consumer).await {
+            Ok(batch) => {
+                let _ = handle.ack(batch.id).await;
+            }
+            Err(RuntimeError::Core(CoreError::NoWork)) => {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Err(_) => {}
+        }
+        let (_, group) = view(&state, "GET", "/v1/groups/g1").await;
+        if group["running"] == false {
+            break;
+        }
+        assert!(Instant::now() < deadline, "drained group is still running");
+    }
+
+    let (_, cp) = view(&state, "GET", "/v1/groups/g1/checkpoint").await;
+    assert_eq!(
+        cp["durable_cursor"],
+        serde_json::to_value(&fetched).unwrap(),
+        "drain read past the fetched position"
+    );
+    let (_, diag) = view(&state, "GET", "/v1/groups/g1/diagnostics").await;
+    assert_eq!(diag["last_stop_reason"], "drained");
+}
+
+/// B10: a connection that a group still uses cannot be deleted.
+#[tokio::test]
+async fn regress_b10_connection_in_use_cannot_be_deleted() {
+    let (_dir, state) = test_state("tok");
+    with_test_connection(&state, Duration::ZERO).await;
+    state
+        .service
+        .create_group(adapter_group("g1"))
+        .await
+        .unwrap();
+    let (status, _) = view(&state, "DELETE", "/v1/connections/conn").await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let (status, _) = view(&state, "GET", "/v1/connections/conn").await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+/// B13: bad input is a 4xx, not a 500 or a success.
+#[tokio::test]
+async fn regress_b13_invalid_requests_are_client_errors() {
+    let (_dir, state) = test_state("tok");
+    let post = |body: GroupCreateRequest| {
+        let state = state.clone();
+        async move {
+            let json = serde_json::to_string(&body).unwrap();
+            oneshot(state, auth_json("POST", "/v1/groups", "tok", Some(&json)))
+                .await
+                .0
+        }
+    };
+
+    let mut zero_bytes = synthetic_group("a", 8, 8, 2);
+    zero_bytes.max_buffer_bytes = 0;
+    assert_eq!(
+        post(zero_bytes).await,
+        StatusCode::BAD_REQUEST,
+        "max_buffer_bytes 0"
+    );
+
+    let mut zero_timeout = synthetic_group("b", 8, 8, 2);
+    zero_timeout.batch_timeout_ms = 0;
+    assert_eq!(
+        post(zero_timeout).await,
+        StatusCode::BAD_REQUEST,
+        "batch_timeout_ms 0"
+    );
+
+    let big_batch = synthetic_group("c", 8, 8, 64);
+    assert_eq!(
+        post(big_batch).await,
+        StatusCode::BAD_REQUEST,
+        "batch larger than the buffer"
+    );
+
+    assert_eq!(
+        post(synthetic_group("bad/id", 8, 8, 2)).await,
+        StatusCode::BAD_REQUEST,
+        "slash in group id"
+    );
+    assert_eq!(
+        post(synthetic_group(&"x".repeat(200), 8, 8, 2)).await,
+        StatusCode::BAD_REQUEST,
+        "200-byte group id"
+    );
+
+    let conn = serde_json::json!({
+        "id": "bad id", "kind": "test", "config_json": {}, "secret": "s"
+    })
+    .to_string();
+    let (status, _) = oneshot(
+        state.clone(),
+        auth_json("POST", "/v1/connections", "tok", Some(&conn)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "space in connection id");
+
+    state
+        .service
+        .create_group(synthetic_group("ok", 8, 8, 2))
+        .await
+        .unwrap();
+    state.service.start_group("ok").await.unwrap();
+    let (status, _) = view(&state, "POST", "/v1/groups/ok/drain").await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = view(&state, "POST", "/v1/groups/ok/drain").await;
+    assert_eq!(status, StatusCode::CONFLICT, "second drain");
+}
+
+/// P3: a slow source open does not block unrelated control requests.
+#[tokio::test]
+async fn regress_p03_status_answers_while_a_group_is_starting() {
+    let (_dir, state) = test_state("tok");
+    with_test_connection(&state, Duration::from_secs(2)).await;
+    state
+        .service
+        .create_group(adapter_group("slow"))
+        .await
+        .unwrap();
+    let svc = Arc::clone(&state.service);
+    let starting = tokio::spawn(async move { svc.start_group("slow").await });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let started = Instant::now();
+    let _ = state.service.status().await;
+    let _ = state.service.list_groups().await.unwrap();
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "status and list waited {elapsed:?} behind a starting group"
+    );
+    starting.await.unwrap().unwrap();
+}
+
+/// B6: TLS flags that point at missing files are an error. The server must
+/// not generate certificates in their place.
+#[tokio::test]
+async fn regress_b06_missing_tls_files_are_an_error() {
+    use crate::control::{ServeConfig, serve};
+
+    let dir = tempdir().unwrap();
+    let cert = dir.path().join("server.crt");
+    let key = dir.path().join("server.key");
+    let result = tokio::time::timeout(
+        Duration::from_secs(3),
+        serve(ServeConfig {
+            bind: "127.0.0.1:0".parse().unwrap(),
+            data_bind: "127.0.0.1:0".parse().unwrap(),
+            store_path: dir.path().join("meta.redb"),
+            api_token: "tok".into(),
+            store_key: Some(StoreKey::generate()),
+            tls_cert: Some(cert.clone()),
+            tls_key: Some(key.clone()),
+            source_factory: None,
+            checkpoint_interval: std::time::Duration::ZERO,
+        }),
+    )
+    .await;
+    assert!(
+        matches!(result, Ok(Err(_))),
+        "serve did not fail on missing TLS files"
+    );
+    assert!(
+        !cert.exists(),
+        "serve wrote a certificate at the supplied path"
+    );
+    assert!(!key.exists(), "serve wrote a key at the supplied path");
+}
+
+/// B11: a store that holds sealed secrets does not start with a key that
+/// cannot open them.
+#[tokio::test]
+async fn regress_b11_store_with_secrets_rejects_a_wrong_key() {
+    use crate::control::{ServeConfig, serve};
+    use crate::store::{ConnectionRecord, seal_secret};
+
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("meta.redb");
+    let original = StoreKey::generate();
+    {
+        let store = RedbStore::create(&path).unwrap();
+        store
+            .put_connection(&ConnectionRecord {
+                id: "pg".into(),
+                kind: "postgres".into(),
+                config_json: serde_json::json!({}),
+                sealed_secret: seal_secret(&original, b"s3cret").unwrap(),
+            })
+            .unwrap();
+    }
+
+    for store_key in [Some(StoreKey::generate()), None] {
+        let explicit = store_key.is_some();
+        let result = tokio::time::timeout(
+            Duration::from_secs(3),
+            serve(ServeConfig {
+                bind: "127.0.0.1:0".parse().unwrap(),
+                data_bind: "127.0.0.1:0".parse().unwrap(),
+                store_path: path.clone(),
+                api_token: "tok".into(),
+                store_key,
+                tls_cert: None,
+                tls_key: None,
+                source_factory: None,
+                checkpoint_interval: std::time::Duration::ZERO,
+            }),
+        )
+        .await;
+        assert!(
+            matches!(result, Ok(Err(_))),
+            "serve started with a key that cannot open the store's secrets (explicit key: {explicit})"
+        );
+    }
+}
+
+/// G1 and B3: shutdown saves progress and keeps the running lifecycle, and
+/// the next start resumes the group.
+#[tokio::test]
+async fn regress_g01_shutdown_keeps_groups_and_boot_resumes_them() {
+    use crate::control::{ServeConfig, serve_until};
+    use crate::core::GroupLifecycle;
+
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("meta.redb");
+    let key = StoreKey::generate();
+    let config = |bind: std::net::SocketAddr| ServeConfig {
+        bind,
+        data_bind: "127.0.0.1:0".parse().unwrap(),
+        store_path: path.clone(),
+        api_token: "tok".into(),
+        store_key: Some(key.clone()),
+        tls_cert: None,
+        tls_key: None,
+        source_factory: None,
+        checkpoint_interval: std::time::Duration::ZERO,
+    };
+    let free_addr = || {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap()
+    };
+    let http = reqwest::Client::new();
+    let call = |method: reqwest::Method, url: String, body: Option<serde_json::Value>| {
+        let mut request = http.request(method, url).bearer_auth("tok");
+        if let Some(body) = body {
+            request = request.json(&body);
+        }
+        async move {
+            let response = request.send().await.unwrap();
+            let status = response.status();
+            let value: serde_json::Value = response.json().await.unwrap_or_default();
+            (status, value)
+        }
+    };
+    let wait_up = |base: String| async move {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while reqwest::get(format!("{base}/health")).await.is_err() {
+            assert!(Instant::now() < deadline, "server did not start");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    };
+
+    let addr = free_addr();
+    let base = format!("http://{addr}");
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let server = tokio::spawn(serve_until(config(addr), async {
+        let _ = stopped.await;
+    }));
+    wait_up(base.clone()).await;
+    let create = serde_json::to_value(synthetic_group("g1", 20, 8, 2)).unwrap();
+    let (status, _) = call(
+        reqwest::Method::POST,
+        format!("{base}/v1/groups"),
+        Some(create),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let (status, _) = call(
+        reqwest::Method::POST,
+        format!("{base}/v1/groups/g1/start"),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200);
+    stop.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), server)
+        .await
+        .expect("serve did not stop")
+        .unwrap()
+        .unwrap();
+
+    {
+        let store = RedbStore::open(&path).unwrap();
+        let group = store
+            .get_group(&GroupId::new("g1").unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(group.lifecycle, GroupLifecycle::Running);
+    }
+
+    let addr = free_addr();
+    let base = format!("http://{addr}");
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let server = tokio::spawn(serve_until(config(addr), async {
+        let _ = stopped.await;
+    }));
+    wait_up(base.clone()).await;
+    let (_, group) = call(reqwest::Method::GET, format!("{base}/v1/groups/g1"), None).await;
+    assert_eq!(group["running"], true, "group was not resumed: {group}");
+    assert_eq!(group["lifecycle"], "Running");
+    stop.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), server)
+        .await
+        .expect("serve did not stop")
+        .unwrap()
+        .unwrap();
 }

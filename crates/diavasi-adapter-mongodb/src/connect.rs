@@ -21,6 +21,11 @@ pub struct MongoEndpoint {
 impl MongoEndpoint {
     pub fn from_request(request: &SourceOpen) -> Result<Self, String> {
         let cfg = &request.connection.config_json;
+        diavasi::runtime::check_keys(
+            cfg,
+            &["host", "port", "database", "user", "auth_source", "tls"],
+            "config_json",
+        )?;
         let host = cfg
             .get("host")
             .and_then(|v| v.as_str())

@@ -9,7 +9,9 @@ description = "Durable consumer groups over existing database queries"
 readme = "../../README.md"
 
 [features]
-default = ["transport-bench"]
+# The transport bake-off harness (Stage 0). Off by default so dependents do not
+# build QUIC and WebTransport.
+default = []
 transport-bench = ["dep:quinn", "dep:hdrhistogram", "dep:sysinfo", "dep:wtransport"]
 
 [dependencies]

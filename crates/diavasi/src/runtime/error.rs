@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::core::CoreError;
+use crate::core::{CoreError, SourceError};
 use crate::store::StoreError;
 
 pub type RuntimeResult<T> = Result<T, RuntimeError>;
@@ -19,6 +19,9 @@ pub enum RuntimeError {
     #[error("group already running: {0}")]
     GroupAlreadyRunning(String),
 
+    #[error("checkpoint write failed: {0}")]
+    CheckpointFailed(String),
+
     #[error("runtime command channel closed")]
     ChannelClosed,
 
@@ -28,8 +31,8 @@ pub enum RuntimeError {
     #[error("runtime task panicked or was aborted")]
     TaskFailed,
 
-    #[error("source: {0}")]
-    Source(String),
+    #[error("{0}")]
+    Source(SourceError),
 
     #[error("shutdown")]
     Shutdown,

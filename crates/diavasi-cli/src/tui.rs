@@ -58,7 +58,10 @@ struct Dashboard {
     groups: Vec<GroupLine>,
     selected: usize,
     detail: Option<Detail>,
+    /// The last refresh's error. Replaced by every refresh.
     error: Option<String>,
+    /// The last start, pause, or drain that failed. Kept until the next key.
+    action_error: Option<String>,
 }
 
 enum Effect {
@@ -116,13 +119,14 @@ async fn drive(
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             return Ok(());
         }
+        dash.action_error = None;
         match on_key(dash, key.code) {
             Effect::Quit => return Ok(()),
             Effect::None => {}
             Effect::Refresh => next_refresh = Instant::now(),
             Effect::Post(path) => {
                 if let Err(err) = post(http, base, token, &path).await {
-                    dash.error = Some(err);
+                    dash.action_error = Some(err);
                 }
                 next_refresh = Instant::now();
             }
@@ -277,7 +281,7 @@ fn render(frame: &mut Frame, dash: &Dashboard) {
     for line in detail_text.lines() {
         body.push_line(Line::from(line.to_string()));
     }
-    if let Some(err) = &dash.error {
+    for err in [&dash.action_error, &dash.error].into_iter().flatten() {
         body.push_line(Line::styled(err.clone(), Style::new().fg(Color::Red)));
     }
     let detail = Paragraph::new(body)
@@ -310,6 +314,7 @@ impl Dashboard {
             selected: 0,
             detail: None,
             error: None,
+            action_error: None,
         }
     }
 
@@ -325,7 +330,10 @@ impl Dashboard {
         self.ready = refresh.ready;
         self.version = refresh.version;
         self.running_groups = refresh.running_groups;
-        self.groups = refresh.groups;
+        // A failed group list keeps the last good one on screen.
+        if let Some(groups) = refresh.groups {
+            self.groups = groups;
+        }
         self.detail = refresh.detail;
         self.error = refresh.error;
         if self.groups.is_empty() {
@@ -347,7 +355,8 @@ struct Refresh {
     ready: Probe,
     version: String,
     running_groups: usize,
-    groups: Vec<GroupLine>,
+    /// `None` when the list could not be read.
+    groups: Option<Vec<GroupLine>>,
     detail: Option<Detail>,
     error: Option<String>,
 }
@@ -377,27 +386,32 @@ async fn load(http: &reqwest::Client, base: &str, token: &str, selected: Option<
     };
     let groups = match groups {
         Ok(value) => match serde_json::from_value::<Vec<GroupBody>>(value) {
-            Ok(groups) => groups
-                .into_iter()
-                .map(|group| GroupLine {
-                    id: group.group_id,
-                    running: group.running,
-                    lifecycle: group.lifecycle,
-                })
-                .collect(),
+            Ok(groups) => Some(
+                groups
+                    .into_iter()
+                    .map(|group| GroupLine {
+                        id: group.group_id,
+                        running: group.running,
+                        lifecycle: group.lifecycle,
+                    })
+                    .collect::<Vec<_>>(),
+            ),
             Err(err) => {
                 error = Some(format!("groups: {err}"));
-                Vec::new()
+                None
             }
         },
         Err(err) => {
             error = Some(err);
-            Vec::new()
+            None
         }
     };
-    let selected = selected
-        .map(str::to_string)
-        .or_else(|| groups.first().map(|group| group.id.clone()));
+    let selected = selected.map(str::to_string).or_else(|| {
+        groups
+            .as_ref()
+            .and_then(|groups| groups.first())
+            .map(|group| group.id.clone())
+    });
     let detail = if let Some(id) = selected {
         match get_json(http, base, token, &format!("/v1/groups/{id}/diagnostics")).await {
             Ok(value) => match serde_json::from_value::<DiagnosticsBody>(value) {
@@ -645,7 +659,7 @@ mod tests {
             ready: Probe::Down,
             version: "0.1.0".into(),
             running_groups: 1,
-            groups: vec![
+            groups: Some(vec![
                 GroupLine {
                     id: "beta".into(),
                     running: false,
@@ -656,11 +670,34 @@ mod tests {
                     running: true,
                     lifecycle: "Running".into(),
                 },
-            ],
+            ]),
             detail: None,
             error: None,
         });
         assert_eq!(dash.selected_id(), Some("beta"));
         assert_eq!(dash.ready, Probe::Down);
+    }
+
+    /// B25: a failed refresh keeps the last good group list, and a failed
+    /// action stays on screen across refreshes.
+    #[test]
+    fn failed_refresh_keeps_groups_and_action_errors_persist() {
+        let mut dash = sample();
+        let before: Vec<String> = dash.groups.iter().map(|g| g.id.clone()).collect();
+        dash.action_error = Some("HTTP 409 Conflict: group is not running".into());
+        dash.apply(Refresh {
+            health: Probe::Down,
+            ready: Probe::Down,
+            version: "-".into(),
+            running_groups: 0,
+            groups: None,
+            detail: None,
+            error: Some("connection refused".into()),
+        });
+        let after: Vec<String> = dash.groups.iter().map(|g| g.id.clone()).collect();
+        assert_eq!(after, before);
+        let screen = view(&dash);
+        assert!(screen.contains("connection refused"), "{screen}");
+        assert!(screen.contains("group is not running"), "{screen}");
     }
 }

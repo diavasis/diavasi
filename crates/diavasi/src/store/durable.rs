@@ -2,8 +2,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::core::{
-    Batch, BatchId, ConsumerId, CoreResult, GroupConfig, GroupEngine, GroupId, GroupSnapshot,
-    LogicalCursor,
+    AckOutcome, Batch, BatchId, ConsumerId, CoreResult, GroupConfig, GroupEngine, GroupId,
+    GroupSnapshot, LogicalCursor,
 };
 
 use super::crash::{CrashHook, CrashPoint, check_crash, no_crash};
@@ -19,6 +19,8 @@ pub struct DurableGroup<S: StateStore> {
     connection_id: Option<String>,
     source_spec: Option<serde_json::Value>,
     crash: CrashHook,
+    /// The committed cursor as last written to the store.
+    persisted: LogicalCursor,
 }
 
 impl<S: StateStore> DurableGroup<S> {
@@ -49,8 +51,7 @@ impl<S: StateStore> DurableGroup<S> {
             connection_id: connection_id.clone(),
             source_spec: source_spec.clone(),
         };
-        store.put_group(&group)?;
-        store.commit_checkpoint(group.group_id(), &None)?;
+        store.insert_group(&group, &None)?;
         Ok(Self {
             engine,
             store,
@@ -58,6 +59,7 @@ impl<S: StateStore> DurableGroup<S> {
             connection_id,
             source_spec,
             crash: no_crash(),
+            persisted: None,
         })
     }
 
@@ -67,6 +69,7 @@ impl<S: StateStore> DurableGroup<S> {
             .get_group(group_id)?
             .ok_or_else(|| StoreError::GroupNotFound(group_id.to_string()))?;
         let cursor = store.load_checkpoint(group_id)?;
+        let persisted = cursor.clone();
         let snapshot = GroupSnapshot {
             config: group.config.clone(),
             lifecycle: group.lifecycle,
@@ -81,6 +84,7 @@ impl<S: StateStore> DurableGroup<S> {
             connection_id: group.connection_id,
             source_spec: group.source_spec,
             crash: no_crash(),
+            persisted,
         })
     }
 
@@ -139,33 +143,55 @@ impl<S: StateStore> DurableGroup<S> {
         Ok(batch)
     }
 
-    /// ACK a batch; persist checkpoint when the committed cursor advances.
-    pub fn ack(&mut self, batch_id: BatchId) -> StoreResult<()> {
-        let before = self.engine.committed_cursor().clone();
-        self.engine.ack(batch_id)?;
-        check_crash(&self.crash, CrashPoint::AfterAckApplied)?;
-
-        let after = self.engine.committed_cursor().clone();
-        if after != before {
-            check_crash(&self.crash, CrashPoint::BeforeCheckpointCompute)?;
-            let group = self.current_group_record();
-            check_crash(&self.crash, CrashPoint::BeforeTxnBegin)?;
-            let crash = Arc::clone(&self.crash);
-            self.store.commit_progress_with_hook(&group, &after, &|| {
-                check_crash(&crash, CrashPoint::BeforeTxnCommit)
-            })?;
-            check_crash(&self.crash, CrashPoint::AfterTxnCommit)?;
-        }
-
+    /// Ack a batch and persist the checkpoint when the committed cursor
+    /// advances. Durable when this returns.
+    pub fn ack(&mut self, batch_id: BatchId) -> StoreResult<AckOutcome> {
+        let outcome = self.ack_in_memory(batch_id)?;
+        self.persist_progress()?;
         check_crash(&self.crash, CrashPoint::AfterAckResponse)?;
-        Ok(())
+        Ok(outcome)
     }
 
-    /// Persist current group record + committed cursor (controlled shutdown).
-    pub fn snapshot_to_store(&self) -> StoreResult<()> {
+    /// Apply an ack to the engine without writing the store. Follow with
+    /// [`Self::persist_progress`]; several acks can share one write.
+    pub fn ack_in_memory(&mut self, batch_id: BatchId) -> StoreResult<AckOutcome> {
+        let outcome = self.engine.ack(batch_id)?;
+        check_crash(&self.crash, CrashPoint::AfterAckApplied)?;
+        Ok(outcome)
+    }
+
+    /// True when the committed cursor moved since the last write.
+    pub fn has_unpersisted_progress(&self) -> bool {
+        self.engine.committed_cursor() != &self.persisted
+    }
+
+    /// Write the group record and committed cursor in one transaction when
+    /// the cursor moved since the last write. Returns whether it wrote.
+    pub fn persist_progress(&mut self) -> StoreResult<bool> {
+        if !self.has_unpersisted_progress() {
+            return Ok(false);
+        }
+        let cursor = self.engine.committed_cursor().clone();
+        check_crash(&self.crash, CrashPoint::BeforeCheckpointCompute)?;
+        let group = self.current_group_record();
+        check_crash(&self.crash, CrashPoint::BeforeTxnBegin)?;
+        let crash = Arc::clone(&self.crash);
+        self.store.commit_progress_with_hook(&group, &cursor, &|| {
+            check_crash(&crash, CrashPoint::BeforeTxnCommit)
+        })?;
+        self.persisted = cursor;
+        check_crash(&self.crash, CrashPoint::AfterTxnCommit)?;
+        Ok(true)
+    }
+
+    /// Persist current group record + committed cursor (lifecycle changes,
+    /// pause, shutdown).
+    pub fn snapshot_to_store(&mut self) -> StoreResult<()> {
         let group = self.current_group_record();
         let cursor = self.engine.committed_cursor().clone();
-        self.store.commit_progress(&group, &cursor)
+        self.store.commit_progress(&group, &cursor)?;
+        self.persisted = cursor;
+        Ok(())
     }
 
     fn current_group_record(&self) -> GroupRecord {

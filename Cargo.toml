@@ -7,6 +7,7 @@ members = [
     "crates/diavasi-adapter-mongodb",
     "crates/diavasi-adapter-redis",
     "crates/diavasi-adapter-scylla",
+    "crates/diavasi-bench",
 ]
 default-members = ["crates/diavasi", "crates/diavasi-cli"]
 

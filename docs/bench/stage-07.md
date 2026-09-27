@@ -2,7 +2,7 @@
 
 Path: PostgreSQL keyset fetch, group buffer, TLS gRPC consumers, ack, redb checkpoint.
 
-The harness is `diavasi-e2e-bench` in `diavasi-adapter-postgres`. It is separate from `diavasi-transport-bench`. One invocation loads a table, starts the server, drains it, and appends one JSONL row.
+The harness is `diavasi-e2e-bench` in the unpublished `diavasi-bench` crate. It is separate from `diavasi-transport-bench`. One invocation loads a table, starts the server, drains it, and appends one JSONL row.
 
 Checked-in rows were taken on an Apple M1 Max with 64GB of memory, release build, Compose Postgres 16 on `127.0.0.1:5433` (`postgres:16-alpine`). `records_per_sec` counts delivered records, including at-least-once redeliveries. `mib_per_sec` is payload-column bytes, not protobuf size. Ack latency is the time from receiving a batch until the ack is queued, so it includes `--ack-delay-ms`.
 
@@ -10,7 +10,7 @@ Checked-in rows were taken on an Apple M1 Max with 64GB of memory, release build
 
 ```bash
 export DATABASE_URL=postgres://diavasi:diavasi@127.0.0.1:5433/diavasi
-cargo run --release -p diavasi-adapter-postgres --bin diavasi-e2e-bench -- \
+cargo run --release -p diavasi-bench --bin diavasi-e2e-bench -- \
   --smoke --output docs/bench/stage-07.jsonl
 ```
 
@@ -29,7 +29,7 @@ cargo run --release -p diavasi-adapter-postgres --bin diavasi-e2e-bench -- \
 The million-row point in the table was produced with:
 
 ```bash
-cargo run --release -p diavasi-adapter-postgres --bin diavasi-e2e-bench -- \
+cargo run --release -p diavasi-bench --bin diavasi-e2e-bench -- \
   --label rows-1m --rows 1000000 --output docs/bench/stage-07.jsonl
 ```
 

@@ -13,6 +13,21 @@ use super::ordering::{LogicalCursor, is_after};
 use super::record::{Batch, Record};
 use super::source::SyntheticSource;
 
+/// Largest payload total in one batch: the 4 MiB default decode limit of gRPC
+/// clients, less room for framing. A batch holds at least one record even
+/// when that record alone is larger.
+pub const MAX_BATCH_BYTES: usize = 4 * 1024 * 1024 - 64 * 1024;
+
+/// What an ack did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AckOutcome {
+    /// The batch was in flight; its records count as complete.
+    Applied,
+    /// The batch was not in flight: it was already acked, or it timed out
+    /// and was requeued, so its records will be delivered again.
+    Stale,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupConfig {
     pub group_id: GroupId,
@@ -111,8 +126,24 @@ impl GroupEngine {
         Ok(())
     }
 
+    /// Stop reading the source and refuse new consumers. Records already
+    /// fetched are still delivered and acked. See [`Self::is_drained`].
     pub fn drain(&mut self) -> CoreResult<()> {
         self.lifecycle = self.lifecycle.transition_to(GroupLifecycle::Draining)?;
+        Ok(())
+    }
+
+    /// True when a draining group has delivered and received acks for
+    /// everything it fetched.
+    pub fn is_drained(&self) -> bool {
+        self.lifecycle == GroupLifecycle::Draining
+            && self.buffer.is_empty()
+            && self.inflight.is_empty()
+    }
+
+    /// Operator pause: a running or draining group becomes `Stopped`.
+    pub fn pause(&mut self) -> CoreResult<()> {
+        self.lifecycle = self.lifecycle.transition_to(GroupLifecycle::Stopped)?;
         Ok(())
     }
 
@@ -165,8 +196,12 @@ impl GroupEngine {
         Ok(engine)
     }
 
+    /// Join a consumer. A draining group accepts no new consumers.
     pub fn join_consumer(&mut self, id: ConsumerId) -> CoreResult<()> {
         self.ensure_dispatch()?;
+        if self.lifecycle == GroupLifecycle::Draining {
+            return Err(CoreError::NotRunning(self.lifecycle));
+        }
         self.consumers.join(id)
     }
 
@@ -179,19 +214,19 @@ impl GroupEngine {
     }
 
     /// Pull from the synthetic source into the buffer while capacity remains.
-    /// Returns number of records fetched.
+    /// Returns number of records fetched. A draining group fetches nothing.
     pub fn poll_fetch(&mut self) -> CoreResult<usize> {
         self.ensure_dispatch()?;
+        if self.lifecycle == GroupLifecycle::Draining {
+            return Ok(0);
+        }
+        let slots = self.buffer.remaining_record_slots();
+        if slots == 0 {
+            return Ok(0);
+        }
+        let page = self.source.fetch_after(&self.fetched_cursor, slots);
         let mut fetched = 0usize;
-        while self.buffer.remaining_record_slots() > 0 {
-            let Some(record) = self
-                .source
-                .fetch_after(&self.fetched_cursor, 1)
-                .into_iter()
-                .next()
-            else {
-                break;
-            };
+        for record in page {
             if !self.buffer.can_accept(&record) {
                 break;
             }
@@ -203,9 +238,13 @@ impl GroupEngine {
     }
 
     /// Push records already read from an external source. Stops when the buffer is full.
-    /// The fetched cursor advances only for records that were accepted.
+    /// The fetched cursor advances only for records that were accepted. A
+    /// draining group accepts nothing.
     pub fn ingest(&mut self, records: Vec<Record>) -> CoreResult<usize> {
         self.ensure_dispatch()?;
+        if self.lifecycle == GroupLifecycle::Draining {
+            return Ok(0);
+        }
         let mut fetched = 0usize;
         for record in records {
             if !is_after(&self.fetched_cursor, &record.ordering) {
@@ -228,12 +267,18 @@ impl GroupEngine {
         if !self.consumers.contains(consumer_id) {
             return Err(CoreError::UnknownConsumer(consumer_id.to_string()));
         }
-        let mut records = Vec::new();
+        let mut records: Vec<Record> = Vec::new();
+        let mut bytes = 0usize;
         while records.len() < self.config.batch_max_records {
-            match self.buffer.pop_front() {
-                Some(r) => records.push(r),
-                None => break,
+            let Some(next) = self.buffer.front() else {
+                break;
+            };
+            let size = next.byte_len();
+            if !records.is_empty() && bytes.saturating_add(size) > MAX_BATCH_BYTES {
+                break;
             }
+            bytes = bytes.saturating_add(size);
+            records.push(self.buffer.pop_front().expect("front exists"));
         }
         if records.is_empty() {
             return Err(CoreError::NoWork);
@@ -263,26 +308,29 @@ impl GroupEngine {
         }
     }
 
-    pub fn ack(&mut self, batch_id: BatchId) -> CoreResult<()> {
+    /// Complete a batch. A batch that is not in flight is a no-op and
+    /// returns [`AckOutcome::Stale`].
+    pub fn ack(&mut self, batch_id: BatchId) -> CoreResult<AckOutcome> {
         self.ensure_dispatch()?;
         let Some(assignment) = self.inflight.take(batch_id) else {
-            // Duplicate / stale ACK: no-op.
-            return Ok(());
+            return Ok(AckOutcome::Stale);
         };
         self.commit
             .complete(assignment.records.into_iter().map(|r| r.ordering));
-        Ok(())
+        Ok(AckOutcome::Applied)
     }
 
+    /// Return batches older than `batch_timeout` to the buffer. Returns how
+    /// many batches were requeued; a batch that does not fit stays in flight.
     pub fn tick(&mut self, now: Instant) -> CoreResult<usize> {
         self.ensure_dispatch()?;
         let timed_out = self.inflight.take_timed_out(now, self.config.batch_timeout);
-        let n = timed_out.len();
-        self.requeue_assignments(timed_out);
-        Ok(n)
+        Ok(self.requeue_assignments(timed_out))
     }
 
-    fn requeue_assignments(&mut self, assignments: Vec<Assignment>) {
+    /// Returns how many assignments went back to the buffer.
+    fn requeue_assignments(&mut self, assignments: Vec<Assignment>) -> usize {
+        let mut requeued = 0;
         // Preserve original order by pushing each assignment's records front-first.
         // A batch that does not fit stays in flight and is retried on a later tick.
         for assignment in assignments.into_iter().rev() {
@@ -300,7 +348,9 @@ impl GroupEngine {
                     .push_front(record)
                     .expect("batch fits in the buffer");
             }
+            requeued += 1;
         }
+        requeued
     }
 
     fn ensure_dispatch(&self) -> CoreResult<()> {
@@ -330,11 +380,13 @@ mod tests {
         }
     }
 
-    fn drain_one(engine: &mut GroupEngine, consumer: &ConsumerId) {
+    fn consume_to_end(engine: &mut GroupEngine, consumer: &ConsumerId) {
         loop {
             let _ = engine.poll_fetch().unwrap();
             match engine.assign_batch(consumer) {
-                Ok(batch) => engine.ack(batch.id).unwrap(),
+                Ok(batch) => {
+                    engine.ack(batch.id).unwrap();
+                }
                 Err(CoreError::NoWork) => {
                     if engine.buffer_len() == 0
                         && engine.inflight_len() == 0
@@ -346,7 +398,8 @@ mod tests {
                         break;
                     }
                     if engine.inflight_len() > 0 {
-                        // waiting on acks we should have done
+                        // Every batch is acked when assigned, so nothing is
+                        // left in flight to wait for.
                         break;
                     }
                     let _ = engine.poll_fetch().unwrap();
@@ -365,7 +418,7 @@ mod tests {
         engine.start().unwrap();
         let c = ConsumerId::new("c1").unwrap();
         engine.join_consumer(c.clone()).unwrap();
-        drain_one(&mut engine, &c);
+        consume_to_end(&mut engine, &c);
         assert_eq!(
             engine.committed_cursor(),
             &Some(OrderingValue::single_u64(20))
@@ -458,7 +511,7 @@ mod tests {
         let b2 = engine.assign_batch(&c2).unwrap();
         assert_eq!(b2.records[0].ordering, b.records[0].ordering);
         engine.ack(b2.id).unwrap();
-        drain_one(&mut engine, &c2);
+        consume_to_end(&mut engine, &c2);
         assert_eq!(
             engine.committed_cursor(),
             &Some(OrderingValue::single_u64(4))
@@ -475,8 +528,9 @@ mod tests {
         engine.join_consumer(c.clone()).unwrap();
         let _ = engine.poll_fetch().unwrap();
         let b = engine.assign_batch(&c).unwrap();
-        std::thread::sleep(Duration::from_millis(5));
-        let n = engine.tick(Instant::now()).unwrap();
+        let n = engine
+            .tick(Instant::now() + Duration::from_secs(1))
+            .unwrap();
         assert_eq!(n, 1);
         assert!(engine.inflight.get(b.id).is_none());
         let b2 = engine.assign_batch(&c).unwrap();
@@ -495,12 +549,130 @@ mod tests {
         let b = engine.assign_batch(&c).unwrap();
         let _ = engine.poll_fetch().unwrap();
         assert_eq!(engine.buffer_len(), 4);
-        std::thread::sleep(Duration::from_millis(5));
-        assert_eq!(engine.tick(Instant::now()).unwrap(), 1);
+        engine
+            .tick(Instant::now() + Duration::from_secs(1))
+            .unwrap();
         assert_eq!(engine.buffer_len(), 4);
         assert!(engine.inflight.get(b.id).is_some());
         engine.ack(b.id).unwrap();
         assert!(engine.inflight.get(b.id).is_none());
+    }
+
+    /// B18: `tick` reports batches returned to the buffer, not batches that
+    /// timed out and stayed in flight because the buffer was full.
+    #[test]
+    fn regress_b18_tick_counts_only_requeued_batches() {
+        let mut config = cfg(6, 4, 2);
+        config.batch_timeout = Duration::from_millis(1);
+        let mut engine = GroupEngine::new(config).unwrap();
+        engine.start().unwrap();
+        let c = ConsumerId::new("c1").unwrap();
+        engine.join_consumer(c.clone()).unwrap();
+        engine.poll_fetch().unwrap();
+        let b = engine.assign_batch(&c).unwrap();
+        engine.poll_fetch().unwrap();
+        assert_eq!(engine.buffer_len(), 4);
+        let later = Instant::now() + Duration::from_secs(1);
+        assert_eq!(engine.tick(later).unwrap(), 0, "nothing fit in the buffer");
+        assert!(engine.inflight.get(b.id).is_some());
+    }
+
+    /// B19: an ack for a batch that timed out and was redelivered under a new
+    /// id is stale. It does not complete the records.
+    #[test]
+    fn regress_b19_ack_after_timeout_is_stale() {
+        let mut config = cfg(4, 10, 2);
+        config.batch_timeout = Duration::from_millis(1);
+        let mut engine = GroupEngine::new(config).unwrap();
+        engine.start().unwrap();
+        let c = ConsumerId::new("c1").unwrap();
+        engine.join_consumer(c.clone()).unwrap();
+        engine.poll_fetch().unwrap();
+        let first = engine.assign_batch(&c).unwrap();
+        let later = Instant::now() + Duration::from_secs(1);
+        assert_eq!(engine.tick(later).unwrap(), 1);
+        let again = engine.assign_batch(&c).unwrap();
+        assert_eq!(engine.ack(first.id).unwrap(), AckOutcome::Stale);
+        assert_eq!(engine.committed_cursor(), &None);
+        assert_eq!(engine.ack(again.id).unwrap(), AckOutcome::Applied);
+        assert_eq!(
+            engine.committed_cursor(),
+            &Some(OrderingValue::single_u64(2))
+        );
+    }
+
+    /// G3: a batch stops before it would exceed `MAX_BATCH_BYTES`, but always
+    /// carries at least one record.
+    #[test]
+    fn regress_g03_batches_stay_under_the_byte_cap() {
+        let mut config = cfg(0, 16, 16);
+        config.max_buffer_bytes = 64 * 1024 * 1024;
+        let mut engine = GroupEngine::new(config).unwrap();
+        engine.start().unwrap();
+        let c = ConsumerId::new("c1").unwrap();
+        engine.join_consumer(c.clone()).unwrap();
+        let mib = 1024 * 1024;
+        let records = (1..=6)
+            .map(|id| Record {
+                ordering: OrderingValue::single_u64(id),
+                payload: bytes::Bytes::from(vec![0u8; if id == 5 { 5 * mib } else { mib }]),
+            })
+            .collect();
+        assert_eq!(engine.ingest(records).unwrap(), 6);
+        let sizes = |batch: &Batch| batch.records.iter().map(Record::byte_len).sum::<usize>();
+        let first = engine.assign_batch(&c).unwrap();
+        assert_eq!(first.records.len(), 3);
+        assert!(sizes(&first) <= MAX_BATCH_BYTES);
+        let second = engine.assign_batch(&c).unwrap();
+        assert_eq!(
+            second.records.len(),
+            1,
+            "record 4 alone; record 5 would exceed"
+        );
+        let oversized = engine.assign_batch(&c).unwrap();
+        assert_eq!(
+            oversized.records.len(),
+            1,
+            "a record over the cap still goes out"
+        );
+        assert!(sizes(&oversized) > MAX_BATCH_BYTES);
+    }
+
+    /// B2: a draining group stops reading the source and refuses new consumers,
+    /// but still hands out and accepts acks for what it already holds.
+    #[test]
+    fn regress_b02_draining_stops_fetch_and_rejects_joins() {
+        let mut engine = GroupEngine::new(cfg(20, 4, 2)).unwrap();
+        engine.start().unwrap();
+        let c = ConsumerId::new("c1").unwrap();
+        engine.join_consumer(c.clone()).unwrap();
+        engine.poll_fetch().unwrap();
+        let first = engine.assign_batch(&c).unwrap();
+        engine.drain().unwrap();
+        let fetched = engine.fetched_cursor().clone();
+
+        let _ = engine.poll_fetch();
+        assert_eq!(
+            engine.fetched_cursor(),
+            &fetched,
+            "poll_fetch while draining"
+        );
+        let _ = engine.ingest(vec![Record {
+            ordering: OrderingValue::single_u64(99),
+            payload: bytes::Bytes::from_static(b"x"),
+        }]);
+        assert_eq!(engine.fetched_cursor(), &fetched, "ingest while draining");
+        assert!(
+            engine
+                .join_consumer(ConsumerId::new("c2").unwrap())
+                .is_err(),
+            "join while draining"
+        );
+
+        engine.ack(first.id).unwrap();
+        let second = engine.assign_batch(&c).unwrap();
+        engine.ack(second.id).unwrap();
+        assert_eq!(engine.committed_cursor(), &fetched);
     }
 
     #[test]
@@ -548,7 +720,7 @@ mod tests {
         assert_eq!(snap.committed_cursor, Some(OrderingValue::single_u64(2)));
         let mut engine = GroupEngine::recover_from(snap).unwrap();
         engine.join_consumer(c.clone()).unwrap();
-        drain_one(&mut engine, &c);
+        consume_to_end(&mut engine, &c);
         assert_eq!(
             engine.committed_cursor(),
             &Some(OrderingValue::single_u64(10))
@@ -559,8 +731,7 @@ mod tests {
     fn buffer_backpressure() {
         let mut engine = GroupEngine::new(cfg(100, 4, 2)).unwrap();
         engine.start().unwrap();
-        let n = engine.poll_fetch().unwrap();
-        assert!(n <= 4);
+        assert_eq!(engine.poll_fetch().unwrap(), 4);
         assert_eq!(engine.buffer_len(), 4);
         let n2 = engine.poll_fetch().unwrap();
         assert_eq!(n2, 0);

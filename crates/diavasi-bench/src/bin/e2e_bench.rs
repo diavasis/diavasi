@@ -140,6 +140,7 @@ async fn bench(
         tls_cert: None,
         tls_key: None,
         source_factory: Some(Arc::new(PostgresFactory)),
+        checkpoint_interval: std::time::Duration::ZERO,
     };
     let server = tokio::spawn(async move {
         if let Err(err) = serve(config).await {

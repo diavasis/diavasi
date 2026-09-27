@@ -22,6 +22,11 @@ pub struct RedisEndpoint {
 impl RedisEndpoint {
     pub fn from_request(request: &SourceOpen) -> Result<Self, String> {
         let cfg = &request.connection.config_json;
+        diavasi::runtime::check_keys(
+            cfg,
+            &["host", "port", "db", "user", "username", "tls"],
+            "config_json",
+        )?;
         let host = cfg
             .get("host")
             .and_then(|value| value.as_str())
@@ -46,8 +51,11 @@ impl RedisEndpoint {
             "require" => true,
             other => return Err(format!("tls {other} is not supported")),
         };
+        // `user` is the name every adapter uses; `username` is accepted from
+        // connections created before v0.13.
         let username = cfg
-            .get("username")
+            .get("user")
+            .or_else(|| cfg.get("username"))
             .and_then(|value| value.as_str())
             .filter(|user| !user.is_empty())
             .map(str::to_string);
@@ -139,7 +147,7 @@ impl RedisEndpoint {
             "tls": if self.tls { "require" } else { "disable" },
         });
         if let Some(username) = &self.username {
-            json["username"] = serde_json::Value::String(username.clone());
+            json["user"] = serde_json::Value::String(username.clone());
         }
         json
     }

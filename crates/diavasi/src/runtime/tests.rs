@@ -69,17 +69,33 @@ async fn drain_handle(handle: &GroupHandle, consumer: &ConsumerId, total: u64) {
     );
 }
 
-fn matching_handle<S: StateStore + 'static>(
-    sup: &GroupSupervisor<S>,
+/// Drive the supervisor until the killed group runs again. Restarts wait
+/// at least `RETRY_FIRST`.
+async fn recovered_handle<S: StateStore + 'static>(
+    sup: &mut GroupSupervisor<S>,
     gid: &GroupId,
 ) -> GroupHandle {
-    for _ in 0..50 {
-        if let Some(h) = sup.get_handle(gid) {
-            return h;
-        }
-        std::thread::sleep(Duration::from_millis(5));
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    // The killed task is still listed until the supervisor collects it.
+    while sup.get_handle(gid).is_some() {
+        sup.supervise_once().await.unwrap();
+        assert!(
+            std::time::Instant::now() < deadline,
+            "killed group was not collected"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
     }
-    panic!("handle missing after recover");
+    loop {
+        sup.supervise_once().await.unwrap();
+        if let Some(handle) = sup.get_handle(gid) {
+            return handle;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "group was not restarted"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }
 
 #[tokio::test]
@@ -207,11 +223,8 @@ async fn killed_group_recovers() {
     assert!(durable_before.is_some());
 
     sup.abort_group(&gid).unwrap();
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    let recovered = sup.supervise_once().await.unwrap();
-    assert_eq!(recovered, vec![gid.clone()]);
-
-    let h = sup.get_handle(&gid).unwrap();
+    let h = recovered_handle(&mut sup, &gid).await;
+    assert!(sup.outcome(&gid).unwrap().recovered);
     assert_eq!(h.snapshot_cursor().await.unwrap(), durable_before);
     h.join(c.clone()).await.unwrap();
     drain_handle(&h, &c, 30).await;
@@ -247,25 +260,22 @@ async fn repeated_kill_recover_soak() {
                 tokio::time::sleep(Duration::from_millis(3)).await;
             }
             Err(RuntimeError::ChannelClosed) | Err(RuntimeError::ChannelFull) => {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-                let _ = sup.supervise_once().await.unwrap();
-                h = matching_handle(&sup, &gid);
+                h = recovered_handle(&mut sup, &gid).await;
                 h.join(c.clone()).await.unwrap();
                 continue;
             }
             Err(e) => panic!("{e}"),
         }
 
-        if kills < 5 && acks_since_kill >= 2 {
+        // Each kill doubles the restart delay, so three kills keep this short.
+        if kills < 3 && acks_since_kill >= 2 {
             let cursor = h.snapshot_cursor().await.unwrap();
             let done = cursor == Some(OrderingValue::single_u64(total));
             if !done {
                 kills += 1;
                 acks_since_kill = 0;
                 let _ = sup.abort_group(&gid);
-                tokio::time::sleep(Duration::from_millis(15)).await;
-                let _ = sup.supervise_once().await.unwrap();
-                h = matching_handle(&sup, &gid);
+                h = recovered_handle(&mut sup, &gid).await;
                 h.join(c.clone()).await.unwrap();
             }
         }
@@ -311,7 +321,7 @@ async fn backpressure_under_runtime() {
 }
 
 #[tokio::test]
-async fn caps_hold_while_draining() {
+async fn caps_hold_while_consuming() {
     let (_dir, store) = temp_store();
     persist_group(&store, "caps", 60, 5, 2);
     let mut sup =
@@ -326,10 +336,12 @@ async fn caps_hold_while_draining() {
     let c = ConsumerId::new("c1").unwrap();
     h.join(c.clone()).await.unwrap();
 
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let watcher = {
         let h = h.clone();
+        let stop = Arc::clone(&stop);
         tokio::spawn(async move {
-            for _ in 0..500 {
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
                 let s = h.buffer_stats().await.unwrap();
                 assert!(s.buffer_len <= s.max_buffer_records);
                 assert!(s.buffer_bytes <= s.max_buffer_bytes);
@@ -338,7 +350,9 @@ async fn caps_hold_while_draining() {
         })
     };
     drain_handle(&h, &c, 60).await;
-    watcher.abort();
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    // A failed assertion inside the watcher surfaces here as a panic.
+    watcher.await.unwrap();
 }
 
 #[tokio::test]
@@ -362,7 +376,7 @@ impl RecordSource for FailSource {
         _cursor: &'a crate::core::LogicalCursor,
         _limit: usize,
     ) -> futures::future::BoxFuture<'a, Result<Vec<crate::core::Record>, SourceError>> {
-        Box::pin(async { Err(SourceError("database unavailable".into())) })
+        Box::pin(async { Err(SourceError::Transient("database unavailable".into())) })
     }
 }
 
@@ -535,4 +549,522 @@ async fn slow_consumer_lag_stays_within_the_buffer_cap() {
         text.contains("diavasi_group_inflight_records{group_id=\"g1\"} 2"),
         "{text}"
     );
+}
+
+// Regression tests for the v0.12.0 review. Each name carries its finding id.
+
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+use std::time::Instant;
+
+use futures::future::BoxFuture;
+
+use crate::core::{LogicalCursor, Record, SyntheticSource};
+use crate::runtime::{SourceFactory, SourceOpen};
+use crate::store::{ConnectionRecord, StoreKey, seal_secret};
+
+/// Counts `open` calls. The first `fail_opens` calls fail. Opened sources
+/// either always fail their fetch or read a small synthetic stream.
+struct ScriptedFactory {
+    opens: Arc<AtomicUsize>,
+    fail_opens: usize,
+    fetch_fails: bool,
+}
+
+impl SourceFactory for ScriptedFactory {
+    fn kind(&self) -> &str {
+        "scripted"
+    }
+
+    fn open(
+        &self,
+        _request: SourceOpen,
+    ) -> BoxFuture<'static, Result<Box<dyn RecordSource>, String>> {
+        let n = self.opens.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+        let fail_open = n <= self.fail_opens;
+        let fetch_fails = self.fetch_fails;
+        Box::pin(async move {
+            if fail_open {
+                return Err(format!("open {n} refused"));
+            }
+            if fetch_fails {
+                Ok(Box::new(FailSource) as Box<dyn RecordSource>)
+            } else {
+                Ok(Box::new(SyntheticSource::new(8, 8)) as Box<dyn RecordSource>)
+            }
+        })
+    }
+
+    fn validate(&self, _request: SourceOpen) -> BoxFuture<'static, Result<(), String>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+fn persist_scripted_group(store: &Arc<RedbStore>, key: &StoreKey, id: &str) {
+    store
+        .put_connection(&ConnectionRecord {
+            id: "conn".into(),
+            kind: "scripted".into(),
+            config_json: serde_json::json!({}),
+            sealed_secret: seal_secret(key, b"unused").unwrap(),
+        })
+        .unwrap();
+    DurableGroup::create_with_source(
+        Arc::clone(store),
+        cfg(id, 8, 4, 2),
+        "scripted",
+        Some("conn".into()),
+        Some(serde_json::json!({})),
+    )
+    .unwrap();
+}
+
+/// Blocks the first fetch for six seconds, then fails it.
+struct StuckThenFailSource;
+
+impl RecordSource for StuckThenFailSource {
+    fn fetch_after<'a>(
+        &'a mut self,
+        _cursor: &'a LogicalCursor,
+        _limit: usize,
+    ) -> BoxFuture<'a, Result<Vec<Record>, SourceError>> {
+        Box::pin(async {
+            tokio::time::sleep(Duration::from_secs(6)).await;
+            Err(SourceError::Transient("stuck fetch failed".into()))
+        })
+    }
+}
+
+/// Returns nothing and counts the fetches.
+struct CountingEmptySource(Arc<AtomicUsize>);
+
+impl RecordSource for CountingEmptySource {
+    fn fetch_after<'a>(
+        &'a mut self,
+        _cursor: &'a LogicalCursor,
+        _limit: usize,
+    ) -> BoxFuture<'a, Result<Vec<Record>, SourceError>> {
+        self.0.fetch_add(1, AtomicOrdering::SeqCst);
+        Box::pin(async { Ok(Vec::new()) })
+    }
+}
+
+/// Takes two seconds to return nothing.
+struct SlowEmptySource;
+
+impl RecordSource for SlowEmptySource {
+    fn fetch_after<'a>(
+        &'a mut self,
+        _cursor: &'a LogicalCursor,
+        _limit: usize,
+    ) -> BoxFuture<'a, Result<Vec<Record>, SourceError>> {
+        Box::pin(async {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            Ok(Vec::new())
+        })
+    }
+}
+
+/// B4: when reopening the source fails, the supervisor keeps the group and
+/// retries until it runs again.
+#[tokio::test]
+async fn regress_b04_failed_recovery_is_retried() {
+    let (_dir, store) = temp_store();
+    let key = StoreKey::generate();
+    persist_scripted_group(&store, &key, "g1");
+    let opens = Arc::new(AtomicUsize::new(0));
+    let mut sup =
+        GroupSupervisor::new(Arc::clone(&store)).with_runtime_config(GroupRuntimeConfig {
+            fetch_interval: Duration::from_millis(5),
+            ..Default::default()
+        });
+    sup.set_source_factory(
+        Arc::new(ScriptedFactory {
+            opens: Arc::clone(&opens),
+            fail_opens: 2,
+            fetch_fails: false,
+        }),
+        key,
+    );
+    let gid = GroupId::new("g1").unwrap();
+    sup.start_group_with_source(&gid, Some(Box::new(FailSource)))
+        .await
+        .unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let _ = sup.supervise_once().await;
+        let recovered = sup.get_handle(&gid).is_some()
+            && sup.outcome(&gid).is_some_and(|outcome| outcome.recovered);
+        if recovered {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "group was not recovered; {} opens",
+            opens.load(AtomicOrdering::SeqCst)
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(opens.load(AtomicOrdering::SeqCst) >= 3);
+}
+
+/// B5: a source that keeps failing is reopened with growing delays, not
+/// several times a second.
+#[tokio::test]
+async fn regress_b05_persistent_source_errors_back_off() {
+    let (_dir, store) = temp_store();
+    let key = StoreKey::generate();
+    persist_scripted_group(&store, &key, "g1");
+    let opens = Arc::new(AtomicUsize::new(0));
+    let mut sup =
+        GroupSupervisor::new(Arc::clone(&store)).with_runtime_config(GroupRuntimeConfig {
+            fetch_interval: Duration::from_millis(5),
+            ..Default::default()
+        });
+    sup.set_source_factory(
+        Arc::new(ScriptedFactory {
+            opens: Arc::clone(&opens),
+            fail_opens: 0,
+            fetch_fails: true,
+        }),
+        key,
+    );
+    let gid = GroupId::new("g1").unwrap();
+    sup.start_group(&gid).await.unwrap();
+
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_millis(2_500) {
+        let _ = sup.supervise_once().await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let n = opens.load(AtomicOrdering::SeqCst);
+    assert!(n <= 5, "{n} source opens in 2.5 s");
+}
+
+/// B7: a pause that fails must not leave the group marked as cleanly
+/// stopped. Here the pause times out behind a stuck fetch, then the fetch
+/// fails and the task exits on its own. The supervisor must recover it.
+#[tokio::test]
+async fn regress_b07_failed_pause_keeps_recovery() {
+    let (_dir, store) = temp_store();
+    persist_group(&store, "g1", 8, 4, 2);
+    let mut sup =
+        GroupSupervisor::new(Arc::clone(&store)).with_runtime_config(GroupRuntimeConfig {
+            command_capacity: 1,
+            fetch_interval: Duration::from_millis(5),
+            tick_interval: Duration::from_millis(5),
+            ..Default::default()
+        });
+    let gid = GroupId::new("g1").unwrap();
+    sup.start_group_with_source(&gid, Some(Box::new(StuckThenFailSource)))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    if sup.stop_group(&gid).await.is_ok() {
+        // The owner answered despite the stuck fetch. Nothing else to check.
+        assert!(sup.get_handle(&gid).is_none());
+        return;
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let _ = sup.supervise_once().await;
+        if sup.get_handle(&gid).is_some()
+            && sup.outcome(&gid).is_some_and(|outcome| outcome.recovered)
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "group that failed after a failed pause was not recovered"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// P1: a group whose source has nothing new backs off instead of querying
+/// every fetch interval.
+#[tokio::test]
+async fn regress_p01_idle_group_backs_off() {
+    let (_dir, store) = temp_store();
+    persist_group(&store, "g1", 8, 4, 2);
+    let mut sup = GroupSupervisor::new(Arc::clone(&store));
+    let gid = GroupId::new("g1").unwrap();
+    let fetches = Arc::new(AtomicUsize::new(0));
+    sup.start_group_with_source(
+        &gid,
+        Some(Box::new(CountingEmptySource(Arc::clone(&fetches)))),
+    )
+    .await
+    .unwrap();
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let n = fetches.load(AtomicOrdering::SeqCst);
+    assert!(n <= 30, "{n} empty fetches in one second");
+}
+
+/// P2: a slow source read does not block commands to the group owner.
+#[tokio::test]
+async fn regress_p02_owner_answers_while_a_fetch_is_slow() {
+    let (_dir, store) = temp_store();
+    persist_group(&store, "g1", 8, 4, 2);
+    let mut sup = GroupSupervisor::new(Arc::clone(&store));
+    let gid = GroupId::new("g1").unwrap();
+    let handle = sup
+        .start_group_with_source(&gid, Some(Box::new(SlowEmptySource)))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let started = Instant::now();
+    let answered = tokio::time::timeout(Duration::from_secs(1), handle.live_snapshot()).await;
+    let elapsed = started.elapsed();
+    assert!(answered.is_ok(), "live_snapshot got no answer within 1 s");
+    assert!(
+        elapsed < Duration::from_millis(300),
+        "live_snapshot waited {elapsed:?} behind a fetch"
+    );
+}
+
+/// Counts checkpoint writes on top of a redb store.
+struct CountingStore {
+    inner: RedbStore,
+    writes: AtomicUsize,
+}
+
+impl StateStore for CountingStore {
+    fn schema_version(&self) -> u32 {
+        self.inner.schema_version()
+    }
+    fn put_connection(&self, conn: &ConnectionRecord) -> crate::store::StoreResult<()> {
+        self.inner.put_connection(conn)
+    }
+    fn get_connection(&self, id: &str) -> crate::store::StoreResult<Option<ConnectionRecord>> {
+        self.inner.get_connection(id)
+    }
+    fn list_connections(&self) -> crate::store::StoreResult<Vec<ConnectionRecord>> {
+        self.inner.list_connections()
+    }
+    fn delete_connection(&self, id: &str) -> crate::store::StoreResult<()> {
+        self.inner.delete_connection(id)
+    }
+    fn put_group(&self, group: &crate::store::GroupRecord) -> crate::store::StoreResult<()> {
+        self.inner.put_group(group)
+    }
+    fn insert_group(
+        &self,
+        group: &crate::store::GroupRecord,
+        cursor: &LogicalCursor,
+    ) -> crate::store::StoreResult<()> {
+        self.inner.insert_group(group, cursor)
+    }
+    fn get_group(
+        &self,
+        id: &GroupId,
+    ) -> crate::store::StoreResult<Option<crate::store::GroupRecord>> {
+        self.inner.get_group(id)
+    }
+    fn list_groups(&self) -> crate::store::StoreResult<Vec<crate::store::GroupRecord>> {
+        self.inner.list_groups()
+    }
+    fn delete_group(&self, id: &GroupId) -> crate::store::StoreResult<()> {
+        self.inner.delete_group(id)
+    }
+    fn load_checkpoint(&self, id: &GroupId) -> crate::store::StoreResult<LogicalCursor> {
+        self.inner.load_checkpoint(id)
+    }
+    fn commit_checkpoint(
+        &self,
+        id: &GroupId,
+        cursor: &LogicalCursor,
+    ) -> crate::store::StoreResult<()> {
+        self.inner.commit_checkpoint(id, cursor)
+    }
+    fn commit_progress(
+        &self,
+        group: &crate::store::GroupRecord,
+        cursor: &LogicalCursor,
+    ) -> crate::store::StoreResult<()> {
+        self.writes.fetch_add(1, AtomicOrdering::SeqCst);
+        self.inner.commit_progress(group, cursor)
+    }
+    fn commit_progress_with_hook(
+        &self,
+        group: &crate::store::GroupRecord,
+        cursor: &LogicalCursor,
+        before_commit: &dyn Fn() -> crate::store::StoreResult<()>,
+    ) -> crate::store::StoreResult<()> {
+        self.writes.fetch_add(1, AtomicOrdering::SeqCst);
+        self.inner
+            .commit_progress_with_hook(group, cursor, before_commit)
+    }
+}
+
+/// Start a synthetic group of `total` one-record batches on a counting store
+/// and hand out every batch to one consumer.
+async fn counted_group(
+    config: GroupRuntimeConfig,
+    total: u64,
+) -> (
+    tempfile::TempDir,
+    Arc<CountingStore>,
+    GroupHandle,
+    Vec<crate::core::Batch>,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(CountingStore {
+        inner: RedbStore::create(dir.path().join("diavasi.redb")).unwrap(),
+        writes: AtomicUsize::new(0),
+    });
+    DurableGroup::create(
+        Arc::clone(&store),
+        cfg("g1", total, total as usize, 1),
+        "synthetic-u64",
+    )
+    .unwrap();
+    let durable = DurableGroup::open(Arc::clone(&store), &GroupId::new("g1").unwrap()).unwrap();
+    let spawned = spawn_group_runtime(
+        durable,
+        config,
+        None,
+        crate::observe::Observe::new(),
+        "synthetic".into(),
+    );
+    let handle = spawned.handle;
+    let consumer = ConsumerId::new("c1").unwrap();
+    handle.join(consumer.clone()).await.unwrap();
+    let mut batches = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while batches.len() < total as usize {
+        match handle.assign(&consumer).await {
+            Ok(batch) => batches.push(batch),
+            Err(RuntimeError::Core(crate::core::CoreError::NoWork)) => {
+                assert!(Instant::now() < deadline, "batches were not fetched");
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            Err(err) => panic!("{err}"),
+        }
+    }
+    (dir, store, handle, batches)
+}
+
+/// P4: acks that wait in the mailbox together share one checkpoint write,
+/// and each is answered only after that write.
+#[tokio::test]
+async fn regress_p04_waiting_acks_share_one_checkpoint_write() {
+    let config = GroupRuntimeConfig {
+        fetch_interval: Duration::from_millis(5),
+        tick_interval: Duration::from_secs(60),
+        ..Default::default()
+    };
+    let (_dir, store, handle, batches) = counted_group(config, 8).await;
+    let before = store.writes.load(AtomicOrdering::SeqCst);
+    let results = futures::future::join_all(batches.iter().map(|b| handle.ack(b.id))).await;
+    assert!(results.iter().all(Result::is_ok));
+    let writes = store.writes.load(AtomicOrdering::SeqCst) - before;
+    assert!(writes <= 3, "{writes} checkpoint writes for 8 waiting acks");
+    assert_eq!(
+        store.load_checkpoint(&GroupId::new("g1").unwrap()).unwrap(),
+        Some(OrderingValue::single_u64(8)),
+        "acks were answered before the checkpoint was written"
+    );
+}
+
+/// P4: with a checkpoint interval, acks are answered at once and the
+/// checkpoint follows within about one interval.
+#[tokio::test]
+async fn regress_p04_checkpoint_interval_writes_later() {
+    let config = GroupRuntimeConfig {
+        fetch_interval: Duration::from_millis(5),
+        tick_interval: Duration::from_millis(20),
+        checkpoint_interval: Duration::from_millis(300),
+        ..Default::default()
+    };
+    let (_dir, store, handle, batches) = counted_group(config, 2).await;
+    let gid = GroupId::new("g1").unwrap();
+    let start = store.load_checkpoint(&gid).unwrap();
+    handle.ack(batches[0].id).await.unwrap();
+    handle.ack(batches[1].id).await.unwrap();
+    assert_eq!(
+        handle.snapshot_cursor().await.unwrap(),
+        Some(OrderingValue::single_u64(2))
+    );
+    assert_eq!(
+        store.load_checkpoint(&gid).unwrap(),
+        start,
+        "written before the interval"
+    );
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while store.load_checkpoint(&gid).unwrap() != Some(OrderingValue::single_u64(2)) {
+        assert!(Instant::now() < deadline, "checkpoint was never written");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// Returns nothing until `ready_at`, then records 1 and 2 once.
+struct LateSource {
+    ready_at: Instant,
+    sent: bool,
+}
+
+impl RecordSource for LateSource {
+    fn fetch_after<'a>(
+        &'a mut self,
+        _cursor: &'a LogicalCursor,
+        _limit: usize,
+    ) -> BoxFuture<'a, Result<Vec<Record>, SourceError>> {
+        let records = if !self.sent && Instant::now() >= self.ready_at {
+            self.sent = true;
+            (1..=2)
+                .map(|id| Record {
+                    ordering: OrderingValue::single_u64(id),
+                    payload: bytes::Bytes::from_static(b"x"),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        Box::pin(async move { Ok(records) })
+    }
+}
+
+/// P6: a consumer waiting for records gets them as soon as they arrive, and
+/// hears `NoWork` only when its wait runs out, without polling.
+#[tokio::test]
+async fn regress_p06_assign_wait_answers_when_records_arrive() {
+    let (_dir, store) = temp_store();
+    persist_group(&store, "g1", 8, 8, 2);
+    let mut sup =
+        GroupSupervisor::new(Arc::clone(&store)).with_runtime_config(GroupRuntimeConfig {
+            idle_fetch_max: Duration::from_millis(50),
+            ..Default::default()
+        });
+    let gid = GroupId::new("g1").unwrap();
+    let source = LateSource {
+        ready_at: Instant::now() + Duration::from_millis(300),
+        sent: false,
+    };
+    let handle = sup
+        .start_group_with_source(&gid, Some(Box::new(source)))
+        .await
+        .unwrap();
+    let consumer = ConsumerId::new("c1").unwrap();
+    handle.join(consumer.clone()).await.unwrap();
+
+    let started = Instant::now();
+    let batch = handle
+        .assign_wait(&consumer, Duration::from_secs(3))
+        .await
+        .expect("records arrived during the wait");
+    let waited = started.elapsed();
+    assert_eq!(batch.records.len(), 2);
+    assert!(waited < Duration::from_secs(1), "answered after {waited:?}");
+
+    let started = Instant::now();
+    let idle = handle
+        .assign_wait(&consumer, Duration::from_millis(200))
+        .await;
+    assert!(matches!(
+        idle,
+        Err(RuntimeError::Core(crate::core::CoreError::NoWork))
+    ));
+    assert!(started.elapsed() >= Duration::from_millis(200));
 }

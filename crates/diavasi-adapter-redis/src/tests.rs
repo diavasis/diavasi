@@ -19,25 +19,53 @@ use crate::reader::RedisSource;
 
 static N: AtomicU64 = AtomicU64::new(0);
 
+/// Reads a database URL. With `DIAVASI_REQUIRE_DB=1` a missing URL fails the
+/// test instead of skipping it.
+fn env_url(name: &str) -> Option<String> {
+    let url = std::env::var(name).ok().filter(|url| !url.is_empty());
+    if url.is_none() && std::env::var("DIAVASI_REQUIRE_DB").as_deref() == Ok("1") {
+        panic!("DIAVASI_REQUIRE_DB=1 but {name} is not set");
+    }
+    url
+}
+
 fn redis_url() -> Option<String> {
-    std::env::var("REDIS_URL")
-        .ok()
-        .filter(|url| !url.is_empty())
+    env_url("REDIS_URL")
 }
 
 struct Cleanup {
-    conn: ConnectionManager,
+    endpoint: RedisEndpoint,
     stream: String,
 }
 
 impl Drop for Cleanup {
     fn drop(&mut self) {
-        let mut conn = self.conn.clone();
+        let endpoint = self.endpoint.clone();
         let stream = self.stream.clone();
-        tokio::spawn(async move {
-            let _: redis::RedisResult<()> = conn.del(&stream).await;
+        cleanup_blocking(move || async move {
+            if let Ok(mut conn) = connect(&endpoint).await {
+                let _: redis::RedisResult<()> = conn.del(&stream).await;
+            }
         });
     }
+}
+
+/// Run async cleanup to completion on its own thread and runtime. `Drop`
+/// runs as a test ends, when a task spawned on the test's runtime would never
+/// run and the table or stream would be left behind.
+fn cleanup_blocking<F>(work: impl FnOnce() -> F + Send + 'static)
+where
+    F: std::future::Future<Output = ()>,
+{
+    let _ = std::thread::spawn(move || {
+        if let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            runtime.block_on(work());
+        }
+    })
+    .join();
 }
 
 struct Lab {
@@ -90,7 +118,7 @@ impl Lab {
             })
             .unwrap();
         let _cleanup = Cleanup {
-            conn: conn.clone(),
+            endpoint: endpoint.clone(),
             stream: stream.clone(),
         };
         Some(Self {
@@ -320,8 +348,7 @@ async fn insert_ahead_is_delivered_and_delete_is_omitted() {
     let ahead = lab.xadd("*", "d").await;
     let (ms, seq) = ahead.split_once('-').unwrap();
     let ahead = (ms.parse::<u64>().unwrap(), seq.parse::<u64>().unwrap());
-    tokio::time::sleep(Duration::from_millis(250)).await;
-    lab.service.supervise_once().await.unwrap();
+    await_restart(&lab.service, "g").await;
     let ids = drain(&lab.service, "g", "c2").await;
     assert_eq!(ids, vec![(2, 0), ahead]);
 }
@@ -507,4 +534,169 @@ async fn data_plane_consumes_stream_entries() {
     .await
     .unwrap();
     assert_eq!(report.record_ids.len(), 4);
+}
+
+/// Drive the supervisor until `group` runs again after an abort. Restarts
+/// wait at least `RETRY_FIRST`, and the aborted task stays listed until the
+/// supervisor collects it.
+async fn await_restart(service: &ControlService, group: &str) {
+    let gid = GroupId::new(group).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let running = || async { service.supervisor().lock().await.get_handle(&gid).is_some() };
+    while running().await {
+        service.supervise_once().await.unwrap();
+        assert!(
+            std::time::Instant::now() < deadline,
+            "aborted group was not collected"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    while !running().await {
+        service.supervise_once().await.unwrap();
+        assert!(
+            std::time::Instant::now() < deadline,
+            "group {group} was not restarted"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+// Regression tests for the v0.12.0 review. Each name carries its finding id.
+
+async fn open_source(lab: &Lab) -> RedisSource {
+    let secret = if lab.endpoint.secret().is_empty() {
+        b"unused".to_vec()
+    } else {
+        lab.endpoint.secret().into_bytes()
+    };
+    RedisSource::open(diavasi::runtime::SourceOpen {
+        connection: lab
+            .service
+            .store()
+            .get_connection(&lab.connection_id)
+            .unwrap()
+            .unwrap(),
+        source_spec: lab.spec(serde_json::json!({})),
+        secret,
+    })
+    .await
+    .unwrap()
+}
+
+async fn read_one_at_a_time(mut source: RedisSource) -> Vec<(u64, u64)> {
+    let mut cursor = None;
+    let mut ids = Vec::new();
+    while ids.len() <= 600 {
+        let batch = source.fetch_after(&cursor, 1).await.unwrap();
+        let Some(last) = batch.last() else {
+            break;
+        };
+        cursor = Some(last.ordering.clone());
+        ids.extend(batch.iter().map(pair));
+    }
+    ids
+}
+
+/// B15: two readers configured with the same Redis group name each read
+/// the whole stream. Neither moves the other's position.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn regress_b15_readers_sharing_a_group_name_each_read_every_entry() {
+    let Some(mut lab) = Lab::open().await else {
+        return;
+    };
+    for i in 1..=300u64 {
+        lab.xadd(&format!("{i}-0"), "x").await;
+    }
+    let first = tokio::spawn(read_one_at_a_time(open_source(&lab).await));
+    let second = tokio::spawn(read_one_at_a_time(open_source(&lab).await));
+    let expected: Vec<(u64, u64)> = (1..=300).map(|i| (i, 0)).collect();
+    assert_eq!(first.await.unwrap(), expected, "first reader");
+    assert_eq!(second.await.unwrap(), expected, "second reader");
+}
+
+/// B15: reading the stream does not create or move a Redis consumer group.
+#[tokio::test]
+async fn regress_b15_reading_leaves_no_consumer_group() {
+    let Some(mut lab) = Lab::open().await else {
+        return;
+    };
+    for i in 1..=3u64 {
+        lab.xadd(&format!("{i}-0"), "x").await;
+    }
+    lab.group("g", lab.spec(serde_json::json!({})), 8).await;
+    assert_eq!(drain(&lab.service, "g", "c").await.len(), 3);
+    let groups: Vec<redis::Value> = redis::cmd("XINFO")
+        .arg("GROUPS")
+        .arg(&lab.stream)
+        .query_async(&mut lab.conn)
+        .await
+        .unwrap();
+    assert!(
+        groups.is_empty(),
+        "reads created consumer groups: {groups:?}"
+    );
+}
+
+/// B15: entries trimmed away before the committed cursor was reached are a
+/// reported gap, not a silent skip.
+#[tokio::test]
+async fn regress_b15_trim_past_the_cursor_is_reported() {
+    let Some(mut lab) = Lab::open().await else {
+        return;
+    };
+    for i in 1..=10u64 {
+        lab.xadd(&format!("{i}-0"), "x").await;
+    }
+    lab.group("g", lab.spec(serde_json::json!({})), 3).await;
+    let gid = GroupId::new("g").unwrap();
+    let handle = lab
+        .service
+        .supervisor()
+        .lock()
+        .await
+        .get_handle(&gid)
+        .unwrap();
+    let consumer = ConsumerId::new("c").unwrap();
+    handle.join(consumer.clone()).await.unwrap();
+    let batch = loop {
+        match handle.assign(&consumer).await {
+            Ok(batch) => break batch,
+            Err(RuntimeError::Core(diavasi::core::CoreError::NoWork)) => {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Err(err) => panic!("{err}"),
+        }
+    };
+    assert_eq!(batch.records.iter().map(pair).last(), Some((3, 0)));
+    handle.ack(batch.id).await.unwrap();
+    lab.service.pause_group("g").await.unwrap();
+
+    let _: i64 = redis::cmd("XTRIM")
+        .arg(&lab.stream)
+        .arg("MINID")
+        .arg("7-0")
+        .query_async(&mut lab.conn)
+        .await
+        .unwrap();
+    lab.service.start_group("g").await.unwrap();
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        // Tests run without `serve`, so drive the supervisor that records
+        // why the group task stopped.
+        let _ = lab.service.supervise_once().await;
+        let diag = lab.service.diagnostics("g").await.unwrap();
+        if diag
+            .last_stop_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("trim"))
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "entries 4 to 6 were trimmed before delivery and nothing reported it"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }

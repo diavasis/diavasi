@@ -3,11 +3,12 @@ use std::time::Duration;
 
 use tokio::sync::Mutex;
 
-use crate::core::{ConsumerId, GroupId};
+use crate::core::{GroupId, GroupLifecycle};
 use crate::observe::GaugeSample;
 use crate::runtime::{GroupSupervisor, RuntimeError, SourceFactory, SourceOpen};
 use crate::store::{
-    ConnectionRecord, DurableGroup, RedbStore, StateStore, StoreKey, open_secret, seal_secret,
+    ConnectionRecord, DurableGroup, RedbStore, StateStore, StoreError, StoreKey, open_secret,
+    seal_secret,
 };
 
 use super::dto::{
@@ -17,6 +18,8 @@ use super::dto::{
 use super::error::{ControlError, ControlResult};
 
 pub const MAX_SECRET_BYTES: usize = 16 * 1024;
+/// How long a metrics scrape waits for one group's live numbers.
+const SCRAPE_WAIT: Duration = Duration::from_millis(250);
 pub const MAX_CONFIG_JSON_BYTES: usize = 64 * 1024;
 
 /// Control-plane facade over store + supervisor.
@@ -25,6 +28,9 @@ pub struct ControlService {
     key: StoreKey,
     supervisor: Arc<Mutex<GroupSupervisor<RedbStore>>>,
     bind: String,
+    /// The key lives only in this process. Secrets sealed with it could not
+    /// be opened after a restart, so connection create is refused.
+    ephemeral_key: bool,
 }
 
 impl ControlService {
@@ -35,7 +41,14 @@ impl ControlService {
             key,
             supervisor: Arc::new(Mutex::new(supervisor)),
             bind: bind.into(),
+            ephemeral_key: false,
         }
+    }
+
+    /// Mark the store key as temporary. Connection create is then refused.
+    pub fn with_ephemeral_key(mut self) -> Self {
+        self.ephemeral_key = true;
+        self
     }
 
     pub fn supervisor(&self) -> Arc<Mutex<GroupSupervisor<RedbStore>>> {
@@ -46,6 +59,11 @@ impl ControlService {
         &self.store
     }
 
+    /// Timing for group runtimes started from now on.
+    pub async fn set_runtime_config(&self, config: crate::runtime::GroupRuntimeConfig) {
+        self.supervisor.lock().await.set_runtime_config(config);
+    }
+
     pub async fn install_source_factory(&self, factory: Arc<dyn SourceFactory>) {
         self.supervisor
             .lock()
@@ -53,9 +71,55 @@ impl ControlService {
             .set_source_factory(factory, self.key.clone());
     }
 
+    /// Collect finished groups and run the restarts that are due. Sources are
+    /// opened without holding the supervisor lock.
     pub async fn supervise_once(&self) -> ControlResult<Vec<GroupId>> {
-        let mut sup = self.supervisor.lock().await;
-        Ok(sup.supervise_once().await?)
+        let plans = self.supervisor.lock().await.reap();
+        let mut recovered = Vec::new();
+        for plan in plans {
+            let opened = plan.open().await;
+            if let Ok(handle) = self.supervisor.lock().await.finish_start(opened) {
+                recovered.push(handle.group_id.clone());
+            }
+        }
+        Ok(recovered)
+    }
+
+    /// Start the groups that were running or draining when the process last
+    /// stopped. A group whose source cannot open yet is retried with backoff.
+    pub async fn resume_groups(&self) {
+        let groups = match self.store.list_groups() {
+            Ok(groups) => groups,
+            Err(err) => {
+                tracing::warn!(error = %err, "could not list groups to resume");
+                return;
+            }
+        };
+        for group in groups {
+            if !matches!(
+                group.lifecycle,
+                GroupLifecycle::Running | GroupLifecycle::Draining
+            ) {
+                continue;
+            }
+            let id = group.group_id().clone();
+            match self.start_group(id.as_str()).await {
+                Ok(_) => tracing::info!(group_id = %id, "group resumed"),
+                Err(err) => {
+                    tracing::warn!(group_id = %id, error = %err, "group did not resume; retrying");
+                    self.supervisor
+                        .lock()
+                        .await
+                        .retry_later(&id, err.to_string());
+                }
+            }
+        }
+    }
+
+    /// Save every running group's progress and stop supervising. Lifecycles
+    /// are kept, so the groups resume at the next start.
+    pub async fn shutdown_groups(&self) {
+        self.supervisor.lock().await.shutdown_all().await;
     }
 
     pub fn ready(&self) -> ControlResult<()> {
@@ -68,9 +132,17 @@ impl ControlService {
             let sup = self.supervisor.lock().await;
             (sup.observe(), sup.running_handles())
         };
+        // Ask every group at once, and skip a group that does not answer in
+        // time rather than stall the scrape.
+        let snapshots = futures::future::join_all(
+            handles
+                .iter()
+                .map(|handle| tokio::time::timeout(SCRAPE_WAIT, handle.live_snapshot())),
+        )
+        .await;
         let mut samples = Vec::with_capacity(handles.len());
-        for handle in &handles {
-            if let Ok(snap) = handle.live_snapshot().await {
+        for (handle, snapshot) in handles.iter().zip(snapshots) {
+            if let Ok(Ok(snap)) = snapshot {
                 samples.push(GaugeSample {
                     group_id: handle.group_id.as_str().to_string(),
                     buffer_records: snap.buffer_records as u64,
@@ -85,14 +157,14 @@ impl ControlService {
     }
 
     pub async fn status(&self) -> StatusView {
-        let running = self
-            .supervisor
-            .lock()
-            .await
-            .list_running()
-            .into_iter()
-            .map(|g| g.to_string())
-            .collect();
+        let running = {
+            let mut sup = self.supervisor.lock().await;
+            sup.collect_finished();
+            sup.list_running()
+        }
+        .into_iter()
+        .map(|g| g.to_string())
+        .collect();
         StatusView {
             version: crate::VERSION.to_string(),
             schema_version: self.store.schema_version(),
@@ -103,6 +175,11 @@ impl ControlService {
 
     pub fn create_connection(&self, req: ConnectionCreateRequest) -> ControlResult<ConnectionView> {
         validate_connection_create(&req)?;
+        if self.ephemeral_key {
+            return Err(ControlError::Conflict(
+                "the server runs with a temporary store key; set DIAVASI_STORE_KEY so connection secrets survive a restart".into(),
+            ));
+        }
         if self.store.get_connection(&req.id)?.is_some() {
             return Err(ControlError::Conflict(format!(
                 "connection already exists: {}",
@@ -137,10 +214,25 @@ impl ControlService {
         Ok(connection_view(&rec))
     }
 
+    /// Delete a connection that no group uses. A group bound to a missing
+    /// connection could not start, so a connection in use is a conflict.
     pub fn delete_connection(&self, id: &str) -> ControlResult<()> {
         if self.store.get_connection(id)?.is_none() {
             return Err(ControlError::NotFound(format!(
                 "connection not found: {id}"
+            )));
+        }
+        let users: Vec<String> = self
+            .store
+            .list_groups()?
+            .into_iter()
+            .filter(|group| group.connection_id.as_deref() == Some(id))
+            .map(|group| group.group_id().to_string())
+            .collect();
+        if !users.is_empty() {
+            return Err(ControlError::Conflict(format!(
+                "connection {id} is used by groups: {}",
+                users.join(", ")
             )));
         }
         self.store.delete_connection(id)?;
@@ -154,11 +246,10 @@ impl ControlService {
             ));
         }
         let config = group_config_from_create(&req).map_err(ControlError::BadRequest)?;
+        // Fast answer before validating the source. `insert_group` below is
+        // what makes the id unique under concurrent creates.
         if self.store.get_group(&config.group_id)?.is_some() {
-            return Err(ControlError::Conflict(format!(
-                "group already exists: {}",
-                req.group_id
-            )));
+            return Err(StoreError::GroupExists(req.group_id).into());
         }
         if let Some(cid) = &req.connection_id {
             let connection = self
@@ -211,20 +302,13 @@ impl ControlService {
     }
 
     pub async fn list_groups(&self) -> ControlResult<Vec<GroupView>> {
-        let running: std::collections::HashSet<_> = self
-            .supervisor
-            .lock()
-            .await
-            .list_running()
-            .into_iter()
-            .map(|g| g.to_string())
-            .collect();
-        let mut out = Vec::new();
-        for rec in self.store.list_groups()? {
-            let id = rec.group_id().as_str().to_string();
-            out.push(group_view(&rec, running.contains(&id)));
-        }
-        Ok(out)
+        let records = self.store.list_groups()?;
+        let mut sup = self.supervisor.lock().await;
+        sup.collect_finished();
+        Ok(records
+            .iter()
+            .map(|rec| group_view(rec, presence(&sup, rec.group_id())))
+            .collect())
     }
 
     pub async fn get_group(&self, id: &str) -> ControlResult<GroupView> {
@@ -233,8 +317,9 @@ impl ControlService {
             .store
             .get_group(&gid)?
             .ok_or_else(|| ControlError::NotFound(format!("group not found: {id}")))?;
-        let running = self.supervisor.lock().await.get_handle(&gid).is_some();
-        Ok(group_view(&rec, running))
+        let mut sup = self.supervisor.lock().await;
+        sup.collect_finished();
+        Ok(group_view(&rec, presence(&sup, &gid)))
     }
 
     fn group_view_from_store(&self, id: &str, running: bool) -> ControlResult<GroupView> {
@@ -243,40 +328,60 @@ impl ControlService {
             .store
             .get_group(&gid)?
             .ok_or_else(|| ControlError::NotFound(format!("group not found: {id}")))?;
-        Ok(group_view(&rec, running))
+        let presence = if running {
+            Presence::Running
+        } else {
+            Presence::Idle
+        };
+        Ok(group_view(&rec, presence))
     }
 
     pub async fn delete_group(&self, id: &str) -> ControlResult<()> {
         let gid = GroupId::new(id).map_err(|e| ControlError::BadRequest(e.to_string()))?;
-        if self.supervisor.lock().await.get_handle(&gid).is_some() {
+        // Hold the supervisor across the check and the delete so a start
+        // cannot slip in between and run a group whose record is gone.
+        let mut supervisor = self.supervisor.lock().await;
+        if supervisor.is_active(&gid) {
             return Err(ControlError::Conflict(format!(
                 "group is running; pause it before delete: {id}"
             )));
         }
+        supervisor.cancel_retry(&gid);
         if self.store.get_group(&gid)?.is_none() {
             return Err(ControlError::NotFound(format!("group not found: {id}")));
         }
+        let adapter = self.adapter_label(&gid)?;
         self.store.delete_group(&gid)?;
+        supervisor.observe().forget_group(gid.as_str(), &adapter);
+        drop(supervisor);
         Ok(())
     }
 
     pub async fn start_group(&self, id: &str) -> ControlResult<GroupView> {
         let gid = GroupId::new(id).map_err(|e| ControlError::BadRequest(e.to_string()))?;
-        let mut sup = self.supervisor.lock().await;
-        match sup.start_group(&gid).await {
-            Ok(_) => {}
-            Err(RuntimeError::GroupAlreadyRunning(_)) => {}
+        let plan = match self.supervisor.lock().await.plan_start(&gid) {
+            Ok(plan) => Some(plan),
+            Err(RuntimeError::GroupAlreadyRunning(_)) => None,
             Err(e) => return Err(e.into()),
+        };
+        if let Some(plan) = plan {
+            // Opening the source may take seconds; other requests proceed.
+            let opened = plan.open().await;
+            self.supervisor.lock().await.finish_start(opened)?;
         }
-        drop(sup);
         self.get_group(id).await
     }
 
     pub async fn pause_group(&self, id: &str) -> ControlResult<GroupView> {
         let gid = GroupId::new(id).map_err(|e| ControlError::BadRequest(e.to_string()))?;
-        let mut sup = self.supervisor.lock().await;
-        sup.stop_group(&gid).await?;
-        drop(sup);
+        let handle = self.supervisor.lock().await.begin_stop(&gid)?;
+        if let Some(handle) = handle {
+            handle.stop().await?;
+            let join = self.supervisor.lock().await.finish_stop(&gid);
+            if let Some(join) = join {
+                let _ = join.await;
+            }
+        }
         self.get_group(id).await
     }
 
@@ -286,19 +391,20 @@ impl ControlService {
 
     pub async fn drain_group(&self, id: &str) -> ControlResult<GroupView> {
         let gid = GroupId::new(id).map_err(|e| ControlError::BadRequest(e.to_string()))?;
-        let sup = self.supervisor.lock().await;
-        let handle = sup
+        let handle = self
+            .supervisor
+            .lock()
+            .await
             .get_handle(&gid)
             .ok_or_else(|| ControlError::Conflict(format!("group is not running: {id}")))?;
         handle.drain().await?;
-        drop(sup);
         self.get_group(id).await
     }
 
     pub async fn list_consumers(&self, id: &str) -> ControlResult<ConsumersView> {
         let gid = GroupId::new(id).map_err(|e| ControlError::BadRequest(e.to_string()))?;
-        let sup = self.supervisor.lock().await;
-        let consumers = match sup.get_handle(&gid) {
+        let handle = self.supervisor.lock().await.get_handle(&gid);
+        let consumers = match handle {
             Some(h) => h
                 .list_consumers()
                 .await?
@@ -319,17 +425,16 @@ impl ControlService {
             .store
             .get_group(&gid)?
             .ok_or_else(|| ControlError::NotFound(format!("group not found: {id}")))?;
-        let adapter = match &rec.connection_id {
-            None => "synthetic".to_string(),
-            Some(connection_id) => self
-                .store
-                .get_connection(connection_id)?
-                .map(|connection| connection.kind)
-                .unwrap_or_else(|| "unknown".to_string()),
-        };
-        let (handle, outcome, observe) = {
-            let sup = self.supervisor.lock().await;
-            (sup.get_handle(&gid), sup.outcome(&gid), sup.observe())
+        let adapter = self.adapter_label(&gid)?;
+        let (handle, outcome, observe, presence) = {
+            let mut sup = self.supervisor.lock().await;
+            sup.collect_finished();
+            (
+                sup.get_handle(&gid),
+                sup.outcome(&gid),
+                sup.observe(),
+                presence(&sup, &gid),
+            )
         };
         let counters = observe.counters(gid.as_str(), &adapter);
         let live = match handle {
@@ -351,7 +456,7 @@ impl ControlService {
             lifecycle: live
                 .as_ref()
                 .map(|snap| snap.lifecycle)
-                .unwrap_or(rec.lifecycle),
+                .unwrap_or_else(|| view_lifecycle(rec.lifecycle, presence)),
             committed_cursor,
             fetched_cursor: live
                 .as_ref()
@@ -393,18 +498,31 @@ impl ControlService {
         })
     }
 
+    /// The `adapter` metric label: the connection kind, or `synthetic`.
+    fn adapter_label(&self, id: &GroupId) -> ControlResult<String> {
+        let Some(rec) = self.store.get_group(id)? else {
+            return Ok("unknown".into());
+        };
+        Ok(match &rec.connection_id {
+            None => "synthetic".to_string(),
+            Some(connection_id) => self
+                .store
+                .get_connection(connection_id)?
+                .map(|connection| connection.kind)
+                .unwrap_or_else(|| "unknown".to_string()),
+        })
+    }
+
     pub async fn checkpoint(&self, id: &str) -> ControlResult<CheckpointView> {
         let gid = GroupId::new(id).map_err(|e| ControlError::BadRequest(e.to_string()))?;
         if self.store.get_group(&gid)?.is_none() {
             return Err(ControlError::NotFound(format!("group not found: {id}")));
         }
         let durable_cursor = self.store.load_checkpoint(&gid)?;
-        let live_cursor = {
-            let sup = self.supervisor.lock().await;
-            match sup.get_handle(&gid) {
-                Some(h) => Some(h.snapshot_cursor().await?),
-                None => None,
-            }
+        let handle = self.supervisor.lock().await.get_handle(&gid);
+        let live_cursor = match handle {
+            Some(h) => Some(h.snapshot_cursor().await?),
+            None => None,
         };
         Ok(CheckpointView {
             group_id: id.to_string(),
@@ -413,7 +531,8 @@ impl ControlService {
         })
     }
 
-    /// Test/helper: join a consumer and ack batches until cursor advances or idle.
+    /// Join a consumer and ack up to `acks` batches.
+    #[cfg(test)]
     pub async fn advance_for_test(
         &self,
         id: &str,
@@ -421,7 +540,8 @@ impl ControlService {
         acks: usize,
     ) -> ControlResult<()> {
         let gid = GroupId::new(id).map_err(|e| ControlError::BadRequest(e.to_string()))?;
-        let cid = ConsumerId::new(consumer).map_err(|e| ControlError::BadRequest(e.to_string()))?;
+        let cid = crate::core::ConsumerId::new(consumer)
+            .map_err(|e| ControlError::BadRequest(e.to_string()))?;
         let handle = {
             let sup = self.supervisor.lock().await;
             sup.get_handle(&gid)
@@ -457,7 +577,44 @@ fn connection_view(rec: &ConnectionRecord) -> ConnectionView {
     }
 }
 
-fn group_view(rec: &crate::store::GroupRecord, running: bool) -> GroupView {
+/// Where a group is, as the supervisor sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Presence {
+    Running,
+    /// Failed and waiting for its next restart.
+    Retrying,
+    Idle,
+}
+
+fn presence(sup: &GroupSupervisor<RedbStore>, id: &GroupId) -> Presence {
+    if sup.is_active(id) {
+        Presence::Running
+    } else if sup.is_retrying(id) {
+        Presence::Retrying
+    } else {
+        Presence::Idle
+    }
+}
+
+/// The lifecycle to report, so it agrees with `running`. The owner records
+/// `Running` or `Draining` when it starts or drains; until then, and after a
+/// process restart, the stored value can lag the supervisor.
+fn view_lifecycle(stored: GroupLifecycle, presence: Presence) -> GroupLifecycle {
+    match presence {
+        Presence::Running if stored == GroupLifecycle::Draining => GroupLifecycle::Draining,
+        Presence::Running => GroupLifecycle::Running,
+        Presence::Retrying => GroupLifecycle::Recovering,
+        Presence::Idle => match stored {
+            GroupLifecycle::Running
+            | GroupLifecycle::Draining
+            | GroupLifecycle::Starting
+            | GroupLifecycle::Recovering => GroupLifecycle::Stopped,
+            other => other,
+        },
+    }
+}
+
+fn group_view(rec: &crate::store::GroupRecord, presence: Presence) -> GroupView {
     GroupView {
         group_id: rec.group_id().as_str().to_string(),
         total_records: rec.config.total_records,
@@ -468,16 +625,14 @@ fn group_view(rec: &crate::store::GroupRecord, running: bool) -> GroupView {
         batch_timeout_ms: rec.config.batch_timeout.as_millis() as u64,
         ordering_contract: rec.ordering_contract.clone(),
         connection_id: rec.connection_id.clone(),
-        lifecycle: rec.lifecycle,
+        lifecycle: view_lifecycle(rec.lifecycle, presence),
         next_batch_id: rec.next_batch_id,
-        running,
+        running: presence == Presence::Running,
     }
 }
 
 fn validate_connection_create(req: &ConnectionCreateRequest) -> ControlResult<()> {
-    if req.id.is_empty() || req.id.len() > 256 {
-        return Err(ControlError::BadRequest("invalid connection id".into()));
-    }
+    super::dto::check_id("connection id", &req.id).map_err(ControlError::BadRequest)?;
     if req.kind.is_empty() || req.kind.len() > 64 {
         return Err(ControlError::BadRequest("invalid connection kind".into()));
     }

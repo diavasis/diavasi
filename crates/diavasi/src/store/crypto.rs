@@ -27,11 +27,17 @@ impl StoreKey {
         Self(bytes)
     }
 
-    /// Parse 64-character hex from `DIAVASI_STORE_KEY`, or generate ephemeral.
-    pub fn from_env_or_generate() -> StoreResult<Self> {
-        match std::env::var(MASTER_KEY_ENV) {
-            Ok(hex_key) => Self::from_hex(&hex_key),
-            Err(_) => Ok(Self::generate()),
+    /// Parse the key from `DIAVASI_STORE_KEY` (64 hex characters). `Ok(None)`
+    /// when the variable is unset or empty.
+    pub fn from_env() -> StoreResult<Option<Self>> {
+        Self::from_env_value(std::env::var(MASTER_KEY_ENV).ok().as_deref())
+    }
+
+    /// [`Self::from_env`] without reading the process environment.
+    pub fn from_env_value(value: Option<&str>) -> StoreResult<Option<Self>> {
+        match value.map(str::trim).filter(|value| !value.is_empty()) {
+            Some(hex_key) => Self::from_hex(hex_key).map(Some),
+            None => Ok(None),
         }
     }
 
@@ -145,19 +151,14 @@ mod tests {
     }
 
     #[test]
-    fn from_env_or_generate_reads_env() {
+    fn from_env_value_parses_or_reports_absence() {
         let key = StoreKey::generate();
-        let hex = key.to_hex();
-        // SAFETY: test-only; single-threaded unit test mutates process env briefly.
-        unsafe {
-            std::env::set_var(MASTER_KEY_ENV, &hex);
-        }
-        let loaded = StoreKey::from_env_or_generate().unwrap();
+        let loaded = StoreKey::from_env_value(Some(&key.to_hex()))
+            .unwrap()
+            .unwrap();
         assert_eq!(loaded.as_bytes(), key.as_bytes());
-        unsafe {
-            std::env::remove_var(MASTER_KEY_ENV);
-        }
-        let ephemeral = StoreKey::from_env_or_generate().unwrap();
-        assert_eq!(ephemeral.as_bytes().len(), KEY_LEN);
+        assert!(StoreKey::from_env_value(None).unwrap().is_none());
+        assert!(StoreKey::from_env_value(Some("  ")).unwrap().is_none());
+        assert!(StoreKey::from_env_value(Some("abcd")).is_err());
     }
 }

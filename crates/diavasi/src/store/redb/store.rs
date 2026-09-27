@@ -64,11 +64,11 @@ impl RedbStore {
                     });
                 }
                 if found < SCHEMA_VERSION {
-                    // Future migrations land here. For v1, only equal or missing is expected
-                    // after init; older empty DBs are initialized above.
-                    drop(meta);
-                    drop(txn);
-                    return self.migrate(found);
+                    // No migration exists yet: version 1 is the first schema.
+                    return Err(StoreError::SchemaVersion {
+                        found,
+                        supported: SCHEMA_VERSION,
+                    });
                 }
             }
             None => {
@@ -78,16 +78,6 @@ impl RedbStore {
             }
         }
         Ok(())
-    }
-
-    fn migrate(&self, from: u32) -> StoreResult<()> {
-        if from == SCHEMA_VERSION {
-            return Ok(());
-        }
-        Err(StoreError::SchemaVersion {
-            found: from,
-            supported: SCHEMA_VERSION,
-        })
     }
 
     fn encode<T: serde::Serialize>(value: &T) -> StoreResult<Vec<u8>> {
@@ -154,6 +144,26 @@ impl StateStore for RedbStore {
         {
             let mut table = txn.open_table(GROUPS)?;
             table.insert(key, bytes.as_slice())?;
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
+    fn insert_group(&self, group: &GroupRecord, cursor: &LogicalCursor) -> StoreResult<()> {
+        let group_bytes = Self::encode(group)?;
+        let checkpoint_bytes = Self::encode(&CheckpointRecord {
+            cursor: cursor.clone(),
+        })?;
+        let key = group.group_id().as_str();
+        let txn = self.db.begin_write()?;
+        {
+            let mut groups = txn.open_table(GROUPS)?;
+            if groups.get(key)?.is_some() {
+                return Err(StoreError::GroupExists(key.to_string()));
+            }
+            groups.insert(key, group_bytes.as_slice())?;
+            let mut checkpoints = txn.open_table(CHECKPOINTS)?;
+            checkpoints.insert(key, checkpoint_bytes.as_slice())?;
         }
         txn.commit()?;
         Ok(())
@@ -235,6 +245,9 @@ impl StateStore for RedbStore {
         let txn = self.db.begin_write()?;
         {
             let mut groups = txn.open_table(GROUPS)?;
+            if groups.get(key)?.is_none() {
+                return Err(StoreError::GroupNotFound(key.to_string()));
+            }
             groups.insert(key, group_bytes.as_slice())?;
             let mut checkpoints = txn.open_table(CHECKPOINTS)?;
             checkpoints.insert(key, checkpoint_bytes.as_slice())?;

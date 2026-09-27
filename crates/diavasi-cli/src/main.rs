@@ -3,7 +3,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use diavasi::control::{API_TOKEN_ENV, ServeConfig, serve};
+use diavasi::control::{
+    API_TOKEN_ENV, ConnectionCreateRequest, GroupCreateRequest, ServeConfig, serve,
+};
 use diavasi::store::StoreKey;
 
 #[derive(Parser, Debug)]
@@ -67,10 +69,18 @@ enum Commands {
         /// PEM private key for the data plane.
         #[arg(long)]
         tls_key: Option<PathBuf>,
+        /// Write checkpoints at most once per this many milliseconds. 0 (the
+        /// default) writes before each ack is answered. A larger value raises
+        /// throughput; a crash can replay up to one interval of acked records.
+        #[arg(long, default_value_t = 0, env = "DIAVASI_CHECKPOINT_INTERVAL_MS")]
+        checkpoint_interval_ms: u64,
     },
     /// Print library version.
     Version,
     /// Seed Postgres, MongoDB, Redis, or ScyllaDB, then consume the rows and print throughput.
+    ///
+    /// Creates a table, collection, or stream named `diavasi_test_<pid>` in the
+    /// target database and drops it at the end unless `--keep` is set.
     Test {
         /// `postgres`, `mongo` / `mongodb`, `redis`, or `scylla`.
         adapter: AdapterName,
@@ -217,6 +227,7 @@ async fn run(cli: Cli) -> Result<(), ExitCode> {
             data_bind,
             tls_cert,
             tls_key,
+            checkpoint_interval_ms,
         } => {
             diavasi::observe::init_serve_tracing();
             let store_key = match store_key {
@@ -235,6 +246,7 @@ async fn run(cli: Cli) -> Result<(), ExitCode> {
                 tls_cert,
                 tls_key,
                 source_factory: Some(std::sync::Arc::new(sources::RoutingFactory::installed())),
+                checkpoint_interval: std::time::Duration::from_millis(checkpoint_interval_ms),
             })
             .await
             {
@@ -267,7 +279,9 @@ async fn run(cli: Cli) -> Result<(), ExitCode> {
                 redis_url,
                 scylla_url,
                 keep,
-                object: "diavasi_test".into(),
+                // One name per run, so an object of the same name that
+                // someone else created is never dropped.
+                object: format!("diavasi_test_{}", std::process::id()),
                 json: matches!(cli.output, OutputFormat::Json),
             })
             .await
@@ -308,11 +322,11 @@ impl Client {
                 let v = self.get_json("/v1/status").await?;
                 self.print_value(&v, |v| {
                     println!(
-                        "version={} schema={} bind={} running={:?}",
+                        "version={} schema={} bind={} running={}",
                         v["version"].as_str().unwrap_or("?"),
                         v["schema_version"],
                         v["bind"].as_str().unwrap_or("?"),
-                        v["running_groups"]
+                        text(&v["running_groups"])
                     );
                 });
                 Ok(())
@@ -328,15 +342,15 @@ impl Client {
                         eprintln!("error: invalid --config-json: {e}");
                         ExitCode::from(2)
                     })?;
-                let body = serde_json::json!({
-                    "id": id,
-                    "kind": kind,
-                    "config_json": config,
-                    "secret": secret,
-                });
+                let body = ConnectionCreateRequest {
+                    id,
+                    kind,
+                    config_json: config,
+                    secret,
+                };
                 let v = self.post_json("/v1/connections", &body).await?;
                 self.print_value(&v, |v| {
-                    println!("connection {} created (secret sealed)", v["id"]);
+                    println!("connection {} created (secret sealed)", text(&v["id"]));
                 });
                 Ok(())
             }
@@ -398,18 +412,18 @@ impl Client {
                     )?),
                     None => None,
                 };
-                let body = serde_json::json!({
-                    "group_id": group_id,
-                    "total_records": total_records,
-                    "payload_size": payload_size,
-                    "max_buffer_records": max_buffer_records,
-                    "max_buffer_bytes": max_buffer_bytes,
-                    "batch_max_records": batch_max_records,
-                    "batch_timeout_ms": batch_timeout_ms,
-                    "ordering_contract": ordering_contract,
-                    "connection_id": connection_id,
-                    "source_spec": source_spec,
-                });
+                let body = GroupCreateRequest {
+                    group_id,
+                    total_records,
+                    payload_size,
+                    max_buffer_records,
+                    max_buffer_bytes,
+                    batch_max_records,
+                    batch_timeout_ms,
+                    ordering_contract,
+                    connection_id,
+                    source_spec,
+                };
                 let v = self.post_json("/v1/groups", &body).await?;
                 self.print_value(&v, |v| {
                     println!(
@@ -426,10 +440,10 @@ impl Client {
                     if let Some(arr) = v.as_array() {
                         for g in arr {
                             println!(
-                                "{}\trunning={}\tlifecycle={:?}",
+                                "{}\trunning={}\tlifecycle={}",
                                 g["group_id"].as_str().unwrap_or("?"),
                                 g["running"],
-                                g["lifecycle"]
+                                text(&g["lifecycle"])
                             );
                         }
                     }
@@ -440,10 +454,10 @@ impl Client {
                 let v = self.get_json(&format!("/v1/groups/{id}")).await?;
                 self.print_value(&v, |v| {
                     println!(
-                        "group={} running={} lifecycle={:?} records={}",
+                        "group={} running={} lifecycle={} records={}",
                         v["group_id"].as_str().unwrap_or("?"),
                         v["running"],
-                        v["lifecycle"],
+                        text(&v["lifecycle"]),
                         v["total_records"]
                     );
                 });
@@ -469,10 +483,10 @@ impl Client {
                 self.print_value(&v, |v| {
                     let reason = v["last_stop_reason"].as_str().unwrap_or("");
                     println!(
-                        "group={} running={} lifecycle={:?} lag={} fetched={} acked={} replayed={} disconnects={} restarts={} recovered={} reason={}",
+                        "group={} running={} lifecycle={} lag={} fetched={} acked={} replayed={} disconnects={} restarts={} recovered={} reason={}",
                         v["group_id"].as_str().unwrap_or(&id),
                         v["running"],
-                        v["lifecycle"],
+                        text(&v["lifecycle"]),
                         v["checkpoint_lag"],
                         v["records_fetched"],
                         v["records_acked"],
@@ -504,10 +518,10 @@ impl Client {
                     .await?;
                 self.print_value(&v, |v| {
                     println!(
-                        "group={} durable={:?} live={:?}",
+                        "group={} durable={} live={}",
                         v["group_id"].as_str().unwrap_or("?"),
-                        v["durable_cursor"],
-                        v["live_cursor"]
+                        text(&v["durable_cursor"]),
+                        text(&v["live_cursor"])
                     );
                 });
                 Ok(())
@@ -555,7 +569,7 @@ impl Client {
     async fn post_json(
         &self,
         path: &str,
-        body: &serde_json::Value,
+        body: &impl serde::Serialize,
     ) -> Result<serde_json::Value, ExitCode> {
         let resp = self
             .http
@@ -609,5 +623,14 @@ impl Client {
             eprintln!("error: invalid json: {e}: {text}");
             ExitCode::FAILURE
         })
+    }
+}
+
+/// A JSON value for text output: strings without quotes, other values as JSON.
+fn text(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Null => "-".into(),
+        other => other.to_string(),
     }
 }

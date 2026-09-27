@@ -24,25 +24,53 @@ use crate::reader::MongoSource;
 
 static N: AtomicU64 = AtomicU64::new(0);
 
+/// Reads a database URL. With `DIAVASI_REQUIRE_DB=1` a missing URL fails the
+/// test instead of skipping it.
+fn env_url(name: &str) -> Option<String> {
+    let url = std::env::var(name).ok().filter(|url| !url.is_empty());
+    if url.is_none() && std::env::var("DIAVASI_REQUIRE_DB").as_deref() == Ok("1") {
+        panic!("DIAVASI_REQUIRE_DB=1 but {name} is not set");
+    }
+    url
+}
+
 fn mongodb_url() -> Option<String> {
-    std::env::var("MONGODB_URL")
-        .ok()
-        .filter(|url| !url.is_empty())
+    env_url("MONGODB_URL")
 }
 
 struct Cleanup {
-    client: Client,
+    endpoint: MongoEndpoint,
     database: String,
 }
 
 impl Drop for Cleanup {
     fn drop(&mut self) {
-        let client = self.client.clone();
+        let endpoint = self.endpoint.clone();
         let database = self.database.clone();
-        tokio::spawn(async move {
-            let _ = client.database(&database).drop().await;
+        cleanup_blocking(move || async move {
+            if let Ok(client) = connect(&endpoint).await {
+                let _ = client.database(&database).drop().await;
+            }
         });
     }
+}
+
+/// Run async cleanup to completion on its own thread and runtime. `Drop`
+/// runs as a test ends, when a task spawned on the test's runtime would never
+/// run and the table or stream would be left behind.
+fn cleanup_blocking<F>(work: impl FnOnce() -> F + Send + 'static)
+where
+    F: std::future::Future<Output = ()>,
+{
+    let _ = std::thread::spawn(move || {
+        if let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            runtime.block_on(work());
+        }
+    })
+    .join();
 }
 
 struct Lab {
@@ -103,7 +131,7 @@ impl Lab {
             })
             .unwrap();
         let cleanup = Cleanup {
-            client: admin.clone(),
+            endpoint: endpoint.clone(),
             database: endpoint.database.clone(),
         };
         Some(Self {
@@ -725,8 +753,7 @@ async fn delete_and_field_update_do_not_redeliver() {
         .await
         .unwrap();
     lab.coll().delete_one(doc! { "id": 3i64 }).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(250)).await;
-    lab.service.supervise_once().await.unwrap();
+    await_restart(&lab.service, "g").await;
     assert_eq!(drain_i64(&lab.service, "g", "c2").await, vec![2]);
 }
 
@@ -769,8 +796,7 @@ async fn ordering_field_update_breaks_the_contract() {
         .update_one(doc! { "seq": 2i64 }, doc! { "$set": { "seq": 0i64 } })
         .await
         .unwrap();
-    tokio::time::sleep(Duration::from_millis(250)).await;
-    lab.service.supervise_once().await.unwrap();
+    await_restart(&lab.service, "g").await;
     let rest = drain_i64(&lab.service, "g", "c2").await;
     assert_eq!(
         rest,
@@ -873,8 +899,7 @@ async fn two_consumers_and_crash_cover_the_uncommitted_tail() {
         .await
         .abort_group(&GroupId::new("g2").unwrap())
         .unwrap();
-    tokio::time::sleep(Duration::from_millis(250)).await;
-    lab.service.supervise_once().await.unwrap();
+    await_restart(&lab.service, "g2").await;
     let mut ids = drain_i64(&lab.service, "g2", "resume").await;
     ids.sort();
     assert_eq!(ids, vec![1, 2, 3, 4, 5, 6]);
@@ -1098,4 +1123,97 @@ async fn missing_collection_is_rejected() {
         .await
         .unwrap_err();
     assert!(err.to_string().contains("was not found"), "{err}");
+}
+
+/// Drive the supervisor until `group` runs again after an abort. Restarts
+/// wait at least `RETRY_FIRST`, and the aborted task stays listed until the
+/// supervisor collects it.
+async fn await_restart(service: &ControlService, group: &str) {
+    let gid = GroupId::new(group).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let running = || async { service.supervisor().lock().await.get_handle(&gid).is_some() };
+    while running().await {
+        service.supervise_once().await.unwrap();
+        assert!(
+            std::time::Instant::now() < deadline,
+            "aborted group was not collected"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    while !running().await {
+        service.supervise_once().await.unwrap();
+        assert!(
+            std::time::Instant::now() < deadline,
+            "group {group} was not restarted"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+// Regression tests for the v0.12.0 review. Each name carries its finding id.
+
+async fn try_group(
+    lab: &Lab,
+    id: &str,
+    spec: serde_json::Value,
+) -> Result<(), diavasi::control::ControlError> {
+    lab.service
+        .create_group(GroupCreateRequest {
+            group_id: id.into(),
+            total_records: 0,
+            payload_size: 1,
+            max_buffer_records: 256,
+            max_buffer_bytes: 8 * 1024 * 1024,
+            batch_max_records: 16,
+            batch_timeout_ms: 5_000,
+            ordering_contract: "mongodb-find-keyset".into(),
+            connection_id: Some(lab.connection_id.clone()),
+            source_spec: Some(spec),
+        })
+        .await
+        .map(|_| ())
+}
+
+fn int64_order(fields: &[&str]) -> serde_json::Value {
+    serde_json::json!({
+        "order_by": fields
+            .iter()
+            .map(|field| serde_json::json!({"field": field, "type": "int64", "direction": "asc"}))
+            .collect::<Vec<_>>()
+    })
+}
+
+/// B1: a sort that is only a prefix of a unique index is not unique, so
+/// resume would skip documents. A sort that starts with every field of a
+/// unique index is accepted.
+#[tokio::test]
+async fn regress_b01_prefix_of_a_composite_unique_index_is_not_unique() {
+    let Some(lab) = Lab::open().await else {
+        return;
+    };
+    lab.unique_index(doc! { "a": 1, "b": 1 }).await;
+
+    let err = try_group(&lab, "prefix", lab.spec(int64_order(&["a"])))
+        .await
+        .err()
+        .expect("order_by [a] accepted although only (a, b) is unique");
+    assert!(err.to_string().contains("unique"), "{err}");
+
+    try_group(&lab, "exact", lab.spec(int64_order(&["a", "b"])))
+        .await
+        .expect("order_by [a, b] matches the unique index");
+    try_group(&lab, "longer", lab.spec(int64_order(&["a", "b", "c"])))
+        .await
+        .expect("order_by [a, b, c] starts with the unique index");
+}
+
+/// B22: MongoDB allows dots in collection names.
+#[test]
+fn regress_b22_dotted_collection_names_are_valid() {
+    let spec = crate::spec::SourceSpec::parse(&serde_json::json!({"collection": "app.events"}))
+        .expect("app.events is a valid collection name");
+    assert_eq!(spec.collection, "app.events");
+    assert!(
+        crate::spec::SourceSpec::parse(&serde_json::json!({"collection": "system.users"})).is_err()
+    );
 }

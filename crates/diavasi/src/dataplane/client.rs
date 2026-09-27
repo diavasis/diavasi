@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -14,6 +13,13 @@ use super::pb::data_plane_client::DataPlaneClient;
 use super::pb::envelope::Body;
 use super::{Envelope, PROTOCOL_VERSION, ack, flow_control, hello, join_group, leave};
 
+/// Options for [`ConsumerClient`].
+///
+/// `ConsumerClient` is the in-repo consumer that `diavasi test`, the
+/// benchmarks, and the tests use. Applications use a client SDK such as the
+/// `diavasi-client` crate (ADR 0012). Several fields exist to drive failure
+/// paths in tests: `stop_after_batches`, `idle_after_join`,
+/// `leave_after_join`, and `duplicate_first_ack`.
 pub struct ConsumerOptions {
     pub addr: String,
     pub ca_pem: Vec<u8>,
@@ -23,7 +29,9 @@ pub struct ConsumerOptions {
     pub max_in_flight: u32,
     /// Stop after this many batches without acking or leaving (abrupt disconnect).
     pub stop_after_batches: Option<usize>,
-    /// When set, finish once this many distinct record ids have been acked.
+    /// When set, leave once this many records have been received. Records
+    /// are counted, not deduplicated by `record_id`, which is 0 for Redis and
+    /// compound keys (ADR 0012).
     pub expect_records: Option<u64>,
     /// Stay connected after join without further client frames.
     pub idle_after_join: Option<Duration>,
@@ -54,6 +62,8 @@ pub struct ConsumeReport {
     pub ack_latency_us: Vec<u64>,
 }
 
+/// One data-plane stream that joins a group, acks every batch, and reports
+/// what it received. See [`ConsumerOptions`].
 pub struct ConsumerClient;
 
 impl ConsumerClient {
@@ -81,7 +91,6 @@ impl ConsumerClient {
         let mut inbound = response.into_inner();
 
         let mut record_ids = Vec::new();
-        let mut seen = HashSet::new();
         let mut batches = 0usize;
         let mut acked = 0usize;
         let mut ack_latency_us = Vec::new();
@@ -90,7 +99,7 @@ impl ConsumerClient {
 
         while tokio::time::Instant::now() < deadline {
             if let Some(expect) = opts.expect_records {
-                if seen.len() as u64 >= expect {
+                if record_ids.len() as u64 >= expect {
                     let _ = tx.send(leave()).await;
                     break;
                 }
@@ -133,10 +142,7 @@ impl ConsumerClient {
                 }
                 Some(Body::RecordBatch(batch)) => {
                     batches += 1;
-                    for record in &batch.records {
-                        record_ids.push(record.record_id);
-                        seen.insert(record.record_id);
-                    }
+                    record_ids.extend(batch.records.iter().map(|record| record.record_id));
                     if opts.stop_after_batches == Some(batches) {
                         drop(tx);
                         break;

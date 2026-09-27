@@ -40,20 +40,6 @@ impl GroupRecord {
     pub fn group_id(&self) -> &GroupId {
         &self.config.group_id
     }
-
-    pub fn from_engine_snapshot(
-        snapshot: crate::core::GroupSnapshot,
-        ordering_contract: impl Into<String>,
-    ) -> Self {
-        Self {
-            config: snapshot.config,
-            lifecycle: snapshot.lifecycle,
-            next_batch_id: snapshot.next_batch_id,
-            ordering_contract: ordering_contract.into(),
-            connection_id: None,
-            source_spec: None,
-        }
-    }
 }
 
 /// Checkpoint payload stored under a group id.

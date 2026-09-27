@@ -1,6 +1,8 @@
+use std::time::Duration;
+
 use tokio::sync::oneshot;
 
-use crate::core::{Batch, BatchId, ConsumerId, GroupLifecycle, LogicalCursor};
+use crate::core::{Batch, BatchId, ConsumerId, GroupLifecycle, LogicalCursor, Record, SourceError};
 
 use super::error::RuntimeResult;
 
@@ -14,8 +16,16 @@ pub enum RuntimeCommand {
         consumer: ConsumerId,
         reply: oneshot::Sender<RuntimeResult<()>>,
     },
+    /// Assign a batch now, or answer `NoWork`.
     Assign {
         consumer: ConsumerId,
+        reply: oneshot::Sender<RuntimeResult<Batch>>,
+    },
+    /// Assign a batch, waiting up to `wait` for records to arrive before
+    /// answering `NoWork`.
+    AssignWait {
+        consumer: ConsumerId,
+        wait: Duration,
         reply: oneshot::Sender<RuntimeResult<Batch>>,
     },
     Ack {
@@ -40,12 +50,23 @@ pub enum RuntimeCommand {
     Drain {
         reply: oneshot::Sender<RuntimeResult<()>>,
     },
-    /// Wake the owner to pull from the synthetic source into the buffer.
+    /// Wake the owner to consider a fetch. Adapter reads run in a separate
+    /// fetch task and come back as [`RuntimeCommand::Fetched`].
     Fetch,
+    /// The fetch task finished a read that started at `cursor`.
+    Fetched {
+        cursor: LogicalCursor,
+        result: Result<Vec<Record>, SourceError>,
+        latency: Duration,
+    },
     /// Wake the owner to requeue timed-out in-flight batches.
     Tick,
-    /// Graceful stop: snapshot then exit the owner loop.
+    /// Operator pause: record `Stopped`, snapshot, and exit.
     Stop {
+        reply: oneshot::Sender<RuntimeResult<()>>,
+    },
+    /// Process shutdown: snapshot without changing the lifecycle, and exit.
+    Shutdown {
         reply: oneshot::Sender<RuntimeResult<()>>,
     },
 }

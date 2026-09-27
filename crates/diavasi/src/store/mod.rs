@@ -12,7 +12,7 @@ mod types;
 
 pub mod trait_;
 
-pub use crash::{CrashAction, CrashHook, CrashPoint, NoCrash};
+pub use crash::{CrashAction, CrashHook, CrashPoint, no_crash};
 pub use crypto::{MASTER_KEY_ENV, StoreKey, open_secret, seal_secret};
 pub use durable::DurableGroup;
 pub use error::{StoreError, StoreResult};

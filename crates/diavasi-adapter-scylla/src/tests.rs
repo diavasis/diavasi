@@ -26,10 +26,36 @@ fn schema_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// Reads a database URL. With `DIAVASI_REQUIRE_DB=1` a missing URL fails the
+/// test instead of skipping it.
+fn env_url(name: &str) -> Option<String> {
+    let url = std::env::var(name).ok().filter(|url| !url.is_empty());
+    if url.is_none() && std::env::var("DIAVASI_REQUIRE_DB").as_deref() == Ok("1") {
+        panic!("DIAVASI_REQUIRE_DB=1 but {name} is not set");
+    }
+    url
+}
+
 fn scylla_url() -> Option<String> {
-    std::env::var("SCYLLA_URL")
-        .ok()
-        .filter(|url| !url.is_empty())
+    env_url("SCYLLA_URL")
+}
+
+/// Run async cleanup to completion on its own thread and runtime. `Drop`
+/// runs as a test ends, when a task spawned on the test's runtime would never
+/// run and the table or stream would be left behind.
+fn cleanup_blocking<F>(work: impl FnOnce() -> F + Send + 'static)
+where
+    F: std::future::Future<Output = ()>,
+{
+    let _ = std::thread::spawn(move || {
+        if let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            runtime.block_on(work());
+        }
+    })
+    .join();
 }
 
 struct Lab {
@@ -93,7 +119,7 @@ impl Drop for Lab {
     fn drop(&mut self) {
         let keyspace = self.keyspace.clone();
         let endpoint = self.endpoint.clone();
-        tokio::spawn(async move {
+        cleanup_blocking(move || async move {
             if let Ok(session) = connect(&endpoint).await {
                 let _ = execute(&session, &format!("DROP KEYSPACE IF EXISTS {keyspace}")).await;
             }
@@ -341,8 +367,7 @@ async fn resume_skips_a_committed_row_and_a_delete() {
     lab.delete_id(0, 2).await;
     lab.insert(0, 4, "d").await;
     lab.insert(0, 0, "behind").await;
-    tokio::time::sleep(Duration::from_millis(250)).await;
-    lab.service.supervise_once().await.unwrap();
+    await_restart(&lab.service, "g").await;
     assert_eq!(drain(&lab.service, "g", "c2").await, vec![3, 4]);
 }
 
@@ -713,4 +738,70 @@ async fn partition_of_millions() {
         .await;
     let ids = drain(&lab.service, "g", "c").await;
     assert_eq!(ids.len(), 1_000_000);
+}
+
+/// Drive the supervisor until `group` runs again after an abort. Restarts
+/// wait at least `RETRY_FIRST`, and the aborted task stays listed until the
+/// supervisor collects it.
+async fn await_restart(service: &ControlService, group: &str) {
+    let gid = GroupId::new(group).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let running = || async { service.supervisor().lock().await.get_handle(&gid).is_some() };
+    while running().await {
+        service.supervise_once().await.unwrap();
+        assert!(
+            std::time::Instant::now() < deadline,
+            "aborted group was not collected"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    while !running().await {
+        service.supervise_once().await.unwrap();
+        assert!(
+            std::time::Instant::now() < deadline,
+            "group {group} was not restarted"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+// Regression tests for the v0.12.0 review. Each name carries its finding id.
+
+/// B16: a token scan resumes inside a wide partition and reads every row of
+/// it, then continues with the next partitions.
+#[tokio::test]
+async fn regress_b16_token_scan_resumes_inside_a_wide_partition() {
+    let Some(lab) = Lab::open().await else {
+        return;
+    };
+    lab.table("ASC").await;
+    seed_bucket(&lab.session, &lab.keyspace, "events", 3_000, "x")
+        .await
+        .unwrap();
+    for bucket in [1, 2, 3] {
+        lab.insert(bucket, 1, "row").await;
+    }
+    let spec = serde_json::json!({
+        "keyspace": lab.keyspace,
+        "table": "events",
+        "scan": "token",
+    });
+    let mut source = ScyllaSource::open(lab.open_request(spec)).await.unwrap();
+    let mut cursor = None;
+    let mut seen = HashSet::new();
+    loop {
+        let rows = source
+            .fetch_after(&cursor, 50)
+            .await
+            .unwrap_or_else(|err| panic!("fetch failed after {} rows: {err}", seen.len()));
+        let Some(last) = rows.last() else {
+            break;
+        };
+        cursor = Some(last.ordering.clone());
+        for row in &rows {
+            let key = (payload_i64(row, "bucket"), payload_i64(row, "id"));
+            assert!(seen.insert(key), "row {key:?} delivered twice");
+        }
+    }
+    assert_eq!(seen.len(), 3_003);
 }

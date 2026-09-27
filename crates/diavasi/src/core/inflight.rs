@@ -13,9 +13,12 @@ pub struct Assignment {
     pub assigned_at: Instant,
 }
 
+/// Batches assigned to consumers and not yet acked.
 #[derive(Debug, Default)]
 pub struct InFlightTracker {
     by_batch: HashMap<BatchId, Assignment>,
+    /// Records across all assignments, kept current on every change.
+    records: usize,
 }
 
 impl InFlightTracker {
@@ -28,7 +31,7 @@ impl InFlightTracker {
     }
 
     pub fn record_count(&self) -> usize {
-        self.by_batch.values().map(|a| a.records.len()).sum()
+        self.records
     }
 
     pub fn is_empty(&self) -> bool {
@@ -39,8 +42,15 @@ impl InFlightTracker {
         if self.by_batch.contains_key(&assignment.batch_id) {
             return Err(CoreError::InvalidArgument("duplicate batch id"));
         }
+        self.records += assignment.records.len();
         self.by_batch.insert(assignment.batch_id, assignment);
         Ok(())
+    }
+
+    fn remove(&mut self, batch_id: &BatchId) -> Option<Assignment> {
+        let assignment = self.by_batch.remove(batch_id)?;
+        self.records -= assignment.records.len();
+        Some(assignment)
     }
 
     pub fn get(&self, batch_id: BatchId) -> Option<&Assignment> {
@@ -48,7 +58,7 @@ impl InFlightTracker {
     }
 
     pub fn take(&mut self, batch_id: BatchId) -> Option<Assignment> {
-        self.by_batch.remove(&batch_id)
+        self.remove(&batch_id)
     }
 
     pub fn take_for_consumer(&mut self, consumer_id: &ConsumerId) -> Vec<Assignment> {
@@ -58,9 +68,7 @@ impl InFlightTracker {
             .filter(|(_, a)| &a.consumer_id == consumer_id)
             .map(|(id, _)| *id)
             .collect();
-        ids.into_iter()
-            .filter_map(|id| self.by_batch.remove(&id))
-            .collect()
+        ids.into_iter().filter_map(|id| self.remove(&id)).collect()
     }
 
     pub fn take_timed_out(&mut self, now: Instant, timeout: Duration) -> Vec<Assignment> {
@@ -70,12 +78,11 @@ impl InFlightTracker {
             .filter(|(_, a)| now.duration_since(a.assigned_at) >= timeout)
             .map(|(id, _)| *id)
             .collect();
-        ids.into_iter()
-            .filter_map(|id| self.by_batch.remove(&id))
-            .collect()
+        ids.into_iter().filter_map(|id| self.remove(&id)).collect()
     }
 
     pub fn clear(&mut self) {
         self.by_batch.clear();
+        self.records = 0;
     }
 }

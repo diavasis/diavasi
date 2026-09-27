@@ -3,6 +3,13 @@ use serde::{Deserialize, Serialize};
 use super::error::{CoreError, CoreResult};
 
 /// Explicit group lifecycle. Illegal transitions are rejected.
+///
+/// `Stopped`: not running. `Running`: fetching and delivering. `Draining`:
+/// delivering what is already fetched, reading nothing new; it becomes
+/// `Stopped` when that work is acked. `Failed`: stopped by an error that a
+/// restart would repeat. `Starting` and `Recovering` are transient states
+/// inside [`GroupEngine::start`](super::GroupEngine::start) and
+/// [`GroupEngine::recover_from`](super::GroupEngine::recover_from).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum GroupLifecycle {
     Stopped,
@@ -20,6 +27,7 @@ impl GroupLifecycle {
             (Self::Stopped, Self::Starting)
                 | (Self::Starting, Self::Running)
                 | (Self::Running, Self::Draining)
+                | (Self::Running, Self::Stopped)
                 | (Self::Draining, Self::Stopped)
                 | (Self::Running, Self::Failed)
                 | (Self::Failed, Self::Recovering)

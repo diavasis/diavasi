@@ -12,10 +12,11 @@ pub mod control;
 pub mod core;
 pub mod dataplane;
 pub mod observe;
-pub mod protocol;
 pub mod runtime;
 pub mod store;
 
+#[cfg(feature = "transport-bench")]
+pub mod bench_protocol;
 #[cfg(feature = "transport-bench")]
 pub mod transport_bench;
 

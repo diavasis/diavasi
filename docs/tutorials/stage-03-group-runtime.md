@@ -98,7 +98,7 @@ cargo test -p diavasi --lib runtime::
 | `killed_group_recovers` | Respawn resumes at durable cursor |
 | `repeated_kill_recover_soak` | Multiple kills; full drain; no omissions |
 | `backpressure_under_runtime` | Buffer fills to cap; fetch stalls |
-| `caps_hold_while_draining` | Caps hold under load |
+| `caps_hold_while_consuming` | Buffer caps hold while a consumer drains the source |
 | `stop_group_no_respawn` | Clean stop does not respawn |
 
 ## 6. Misconceptions

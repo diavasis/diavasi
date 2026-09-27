@@ -7,9 +7,6 @@ pub enum StoreError {
     #[error("store I/O: {0}")]
     Io(#[from] std::io::Error),
 
-    #[error("redb: {0}")]
-    Redb(String),
-
     #[error("redb database: {0}")]
     RedbDatabase(Box<::redb::DatabaseError>),
 
@@ -39,6 +36,9 @@ pub enum StoreError {
 
     #[error("group not found: {0}")]
     GroupNotFound(String),
+
+    #[error("group already exists: {0}")]
+    GroupExists(String),
 
     #[error("connection not found: {0}")]
     ConnectionNotFound(String),

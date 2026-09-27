@@ -2,7 +2,7 @@ use bytes::{Buf, BufMut, BytesMut};
 use prost::Message;
 use tokio_util::codec::{Decoder, Encoder};
 
-use crate::protocol::Envelope;
+use crate::bench_protocol::Envelope;
 
 /// Length-prefixed protobuf frames for TCP and QUIC.
 #[derive(Debug, Default, Clone)]
@@ -52,7 +52,7 @@ impl Decoder for EnvelopeCodec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::Envelope;
+    use crate::bench_protocol::Envelope;
 
     #[test]
     fn codec_round_trip() {

@@ -14,5 +14,5 @@ pub use auth::{AuthValidator, BearerTokenAuth};
 pub use dto::*;
 pub use error::{ControlError, ControlResult};
 pub use routes::router;
-pub use server::{API_TOKEN_ENV, ServeConfig, serve};
+pub use server::{API_TOKEN_ENV, ServeConfig, serve, serve_until};
 pub use service::ControlService;

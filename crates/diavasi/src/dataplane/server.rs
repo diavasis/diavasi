@@ -1,22 +1,25 @@
+use std::collections::HashMap;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::task::Poll;
 use std::time::{Duration, Instant};
 
 use futures::{Stream, StreamExt};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, Notify, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::{Identity, Server, ServerTlsConfig};
 use tonic::{Request, Response, Status, Streaming};
 
+use crate::control::{AuthValidator, BearerTokenAuth};
 use crate::core::{Batch, BatchId, ConsumerId, CoreError, GroupId, OrderingAtom};
 use crate::observe::Observe;
 use crate::runtime::{GroupHandle, GroupSupervisor, RuntimeError};
 use crate::store::RedbStore;
 
-use super::error_codes::{HEARTBEAT_TIMEOUT, INTERNAL, NOT_RUNNING};
+use super::error_codes::{BAD_STATE, HEARTBEAT_TIMEOUT, INTERNAL, NOT_RUNNING};
 use super::pb::data_plane_server::{DataPlane, DataPlaneServer};
 use super::pb::{Record, RecordBatch};
 use super::session::{Effect, Session};
@@ -38,8 +41,9 @@ pub async fn serve_dataplane(
     let _ = rustls::crypto::ring::default_provider().install_default();
     let identity = Identity::from_pem(&config.tls_cert_pem, &config.tls_key_pem);
     let svc = DataSvc {
-        auth_token: config.api_token,
+        auth: BearerTokenAuth::new(config.api_token),
         supervisor: config.supervisor,
+        sessions: Arc::new(SessionRegistry::default()),
         heartbeat_interval: config.heartbeat_interval,
         heartbeat_timeout: config.heartbeat_timeout,
     };
@@ -53,9 +57,17 @@ pub async fn serve_dataplane(
     Ok(())
 }
 
+/// How long a stream's request for records waits in the group before the
+/// group answers that it has none.
+const ASSIGN_WAIT: Duration = Duration::from_secs(1);
+
+/// How long a new stream waits for the stream it replaces to close.
+const TAKEOVER_WAIT: Duration = Duration::from_secs(1);
+
 struct DataSvc {
-    auth_token: String,
+    auth: BearerTokenAuth,
     supervisor: Arc<Mutex<GroupSupervisor<RedbStore>>>,
+    sessions: Arc<SessionRegistry>,
     heartbeat_interval: Duration,
     heartbeat_timeout: Duration,
 }
@@ -68,17 +80,19 @@ impl DataPlane for DataSvc {
         &self,
         request: Request<Streaming<Envelope>>,
     ) -> Result<Response<Self::ConsumeStream>, Status> {
-        if !bearer_ok(request.metadata(), &self.auth_token) {
+        if !bearer_ok(request.metadata(), &self.auth) {
             return Err(Status::unauthenticated("unauthorized"));
         }
         let inbound = request.into_inner();
         let (tx, rx) = mpsc::channel(32);
         let supervisor = Arc::clone(&self.supervisor);
+        let sessions = Arc::clone(&self.sessions);
         let heartbeat_interval = self.heartbeat_interval;
         let heartbeat_timeout = self.heartbeat_timeout;
         tokio::spawn(async move {
             drive_session(
                 supervisor,
+                sessions,
                 inbound,
                 tx,
                 heartbeat_interval,
@@ -90,25 +104,90 @@ impl DataPlane for DataSvc {
     }
 }
 
-fn bearer_ok(meta: &tonic::metadata::MetadataMap, expected: &str) -> bool {
-    let Some(value) = meta.get("authorization").and_then(|v| v.to_str().ok()) else {
-        return false;
-    };
-    let Some(token) = value.strip_prefix("Bearer ") else {
-        return false;
-    };
-    subtle_eq(token.trim().as_bytes(), expected.as_bytes())
+/// Check `authorization: Bearer <token>` with the control plane's validator.
+fn bearer_ok(meta: &tonic::metadata::MetadataMap, auth: &BearerTokenAuth) -> bool {
+    let token = meta
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .map(str::trim);
+    auth.validate_bearer(token)
 }
 
-fn subtle_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
+/// One joined stream, as the takeover logic sees it.
+struct SessionEntry {
+    id: u64,
+    /// Set before `evict` fires. The evicted stream then exits without
+    /// calling `leave`, which would remove the consumer that replaced it.
+    evicted: Arc<AtomicBool>,
+    evict: Arc<Notify>,
+    /// Fires when the stream has exited.
+    closed: Arc<Notify>,
+}
+
+/// Joined streams by group and consumer id. A join with a consumer id that
+/// another stream holds takes over: the old stream closes, its unacked
+/// batches return to the buffer, and the new stream joins. This is the
+/// reconnect path for a client whose old connection is not yet known dead.
+#[derive(Default)]
+struct SessionRegistry {
+    next_id: AtomicU64,
+    sessions: std::sync::Mutex<HashMap<(String, String), SessionEntry>>,
+}
+
+impl SessionRegistry {
+    fn key(group: &GroupId, consumer: &ConsumerId) -> (String, String) {
+        (group.as_str().to_string(), consumer.as_str().to_string())
     }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
+
+    fn register(&self, group: &GroupId, consumer: &ConsumerId) -> SessionTicket {
+        let entry = SessionEntry {
+            id: self.next_id.fetch_add(1, Ordering::Relaxed),
+            evicted: Arc::new(AtomicBool::new(false)),
+            evict: Arc::new(Notify::new()),
+            closed: Arc::new(Notify::new()),
+        };
+        let ticket = SessionTicket {
+            id: entry.id,
+            evicted: Arc::clone(&entry.evicted),
+            evict: Arc::clone(&entry.evict),
+            closed: Arc::clone(&entry.closed),
+        };
+        self.lock().insert(Self::key(group, consumer), entry);
+        ticket
     }
-    diff == 0
+
+    /// Tell the stream holding `consumer` to close. Returns the signal that
+    /// fires when it has, or `None` when no stream holds it.
+    fn evict(&self, group: &GroupId, consumer: &ConsumerId) -> Option<Arc<Notify>> {
+        let sessions = self.lock();
+        let entry = sessions.get(&Self::key(group, consumer))?;
+        entry.evicted.store(true, Ordering::SeqCst);
+        entry.evict.notify_one();
+        Some(Arc::clone(&entry.closed))
+    }
+
+    fn remove(&self, group: &GroupId, consumer: &ConsumerId, id: u64) {
+        let mut sessions = self.lock();
+        let key = Self::key(group, consumer);
+        if sessions.get(&key).is_some_and(|entry| entry.id == id) {
+            sessions.remove(&key);
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<(String, String), SessionEntry>> {
+        self.sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+/// A stream's own view of its registry entry.
+struct SessionTicket {
+    id: u64,
+    evicted: Arc<AtomicBool>,
+    evict: Arc<Notify>,
+    closed: Arc<Notify>,
 }
 
 struct JoinedConsumer {
@@ -116,28 +195,37 @@ struct JoinedConsumer {
     consumer: ConsumerId,
     left: bool,
     observe: Observe,
+    sessions: Arc<SessionRegistry>,
+    ticket: SessionTicket,
 }
 
 impl JoinedConsumer {
+    /// Leave the group so this stream's unacked batches return to the
+    /// buffer. Skipped when a newer stream took the consumer id over.
     async fn leave(&mut self) {
         if self.left {
             return;
         }
         self.left = true;
-        let handle = self.handle.clone();
-        let consumer = self.consumer.clone();
-        let observe = self.observe.clone();
-        let _ = handle.leave(&consumer).await;
-        note_disconnect(&observe, &handle, &consumer);
+        if !self.ticket.evicted.load(Ordering::SeqCst) {
+            let _ = self.handle.leave(&self.consumer).await;
+        }
+        note_disconnect(&self.observe, &self.handle, &self.consumer);
     }
 }
 
 impl Drop for JoinedConsumer {
     fn drop(&mut self) {
+        self.sessions
+            .remove(&self.handle.group_id, &self.consumer, self.ticket.id);
+        self.ticket.closed.notify_one();
         if self.left {
             return;
         }
         self.left = true;
+        if self.ticket.evicted.load(Ordering::SeqCst) {
+            return;
+        }
         let handle = self.handle.clone();
         let consumer = self.consumer.clone();
         let observe = self.observe.clone();
@@ -149,7 +237,7 @@ impl Drop for JoinedConsumer {
 }
 
 fn note_disconnect(observe: &Observe, handle: &GroupHandle, consumer: &ConsumerId) {
-    observe.record_disconnect(handle.group_id.as_str(), consumer.as_str());
+    observe.record_disconnect(handle.group_id.as_str());
     tracing::info!(
         group_id = %handle.group_id,
         consumer_id = %consumer.as_str(),
@@ -159,6 +247,7 @@ fn note_disconnect(observe: &Observe, handle: &GroupHandle, consumer: &ConsumerI
 
 async fn drive_session(
     supervisor: Arc<Mutex<GroupSupervisor<RedbStore>>>,
+    sessions: Arc<SessionRegistry>,
     mut inbound: Streaming<Envelope>,
     tx: mpsc::Sender<Result<Envelope, Status>>,
     heartbeat_interval: Duration,
@@ -173,6 +262,8 @@ async fn drive_session(
     // Held across iterations so a heartbeat or inbound frame cannot drop an
     // assign that the group owner has already moved into inflight.
     let mut inflight_pull: Option<Pin<Box<dyn Future<Output = Pull> + Send>>> = None;
+    // Fires when a newer stream takes this consumer id over.
+    let mut evict: Option<Arc<Notify>> = None;
 
     loop {
         if inflight_pull.is_none() && session.can_assign() {
@@ -182,6 +273,18 @@ async fn drive_session(
             }
         }
         tokio::select! {
+            _ = wait_evicted(evict.as_deref()) => {
+                if let Some(consumer) = joined.as_mut() {
+                    consumer.leave().await;
+                }
+                let _ = tx
+                    .send(Ok(error_envelope(
+                        BAD_STATE,
+                        "consumer id taken over by a newer stream",
+                    )))
+                    .await;
+                return;
+            }
             _ = heartbeat.tick() => {
                 if last_rx.elapsed() > heartbeat_timeout {
                     if let Some(consumer) = joined.as_mut() {
@@ -221,8 +324,9 @@ async fn drive_session(
                         for effect in step.effects {
                             match effect {
                                 Effect::Join { group_id, consumer_id } => {
-                                    match join_group(&supervisor, &group_id, &consumer_id, observe.clone()).await {
+                                    match join_group(&supervisor, &sessions, &group_id, &consumer_id, observe.clone()).await {
                                         Ok(consumer) => {
+                                            evict = Some(Arc::clone(&consumer.ticket.evict));
                                             let frame = super::joined(
                                                 consumer.handle.group_id.as_str(),
                                                 consumer.consumer.as_str(),
@@ -330,30 +434,41 @@ async fn pull_owned(target: Option<(GroupHandle, ConsumerId)>) -> Pull {
     let Some((handle, consumer)) = target else {
         return Pull::Idle;
     };
-    match handle.assign(&consumer).await {
+    match handle.assign_wait(&consumer, ASSIGN_WAIT).await {
         Ok(batch) => Pull::Batch(batch),
-        Err(RuntimeError::Core(CoreError::NoWork)) => {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-            Pull::Idle
-        }
+        Err(RuntimeError::Core(CoreError::NoWork)) => Pull::Idle,
         Err(e) => Pull::Failed(e.to_string()),
     }
 }
 
+async fn wait_evicted(evict: Option<&Notify>) {
+    match evict {
+        Some(evict) => evict.notified().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Protocol error code for a failed join.
+fn join_error(err: &RuntimeError) -> Envelope {
+    let code = match err {
+        RuntimeError::GroupNotRunning(_)
+        | RuntimeError::ChannelClosed
+        | RuntimeError::Core(CoreError::NotRunning(_)) => NOT_RUNNING,
+        RuntimeError::Core(_) => BAD_STATE,
+        _ => INTERNAL,
+    };
+    error_envelope(code, err.to_string())
+}
+
 async fn join_group(
     supervisor: &Arc<Mutex<GroupSupervisor<RedbStore>>>,
+    sessions: &Arc<SessionRegistry>,
     group_id: &str,
     consumer_id: &str,
     observe: Observe,
 ) -> Result<JoinedConsumer, Envelope> {
-    let gid = match GroupId::new(group_id) {
-        Ok(id) => id,
-        Err(e) => return Err(error_envelope(NOT_RUNNING, e.to_string())),
-    };
-    let cid = match ConsumerId::new(consumer_id) {
-        Ok(id) => id,
-        Err(e) => return Err(error_envelope(NOT_RUNNING, e.to_string())),
-    };
+    let gid = GroupId::new(group_id).map_err(|e| error_envelope(BAD_STATE, e.to_string()))?;
+    let cid = ConsumerId::new(consumer_id).map_err(|e| error_envelope(BAD_STATE, e.to_string()))?;
     let handle = {
         let sup = supervisor.lock().await;
         match sup.get_handle(&gid) {
@@ -366,14 +481,32 @@ async fn join_group(
             }
         }
     };
-    if let Err(e) = handle.join(cid.clone()).await {
-        return Err(error_envelope(NOT_RUNNING, e.to_string()));
+    match handle.join(cid.clone()).await {
+        Ok(()) => {}
+        Err(RuntimeError::Core(CoreError::DuplicateConsumer(_))) => {
+            let Some(closed) = sessions.evict(&gid, &cid) else {
+                return Err(error_envelope(BAD_STATE, "consumer id is already joined"));
+            };
+            let _ = tokio::time::timeout(TAKEOVER_WAIT, closed.notified()).await;
+            // Return the old stream's unacked batches, then join as its successor.
+            let _ = handle.leave(&cid).await;
+            handle.join(cid.clone()).await.map_err(|e| join_error(&e))?;
+            tracing::info!(
+                group_id = %gid,
+                consumer_id = %cid.as_str(),
+                "stream took over a joined consumer id"
+            );
+        }
+        Err(e) => return Err(join_error(&e)),
     }
+    let ticket = sessions.register(&gid, &cid);
     Ok(JoinedConsumer {
         handle,
         consumer: cid,
         left: false,
         observe,
+        sessions: Arc::clone(sessions),
+        ticket,
     })
 }
 
@@ -389,7 +522,7 @@ fn batch_to_proto(batch: &Batch) -> RecordBatch {
                     [OrderingAtom::I64(id)] if *id >= 0 => *id as u64,
                     _ => 0,
                 },
-                payload: record.payload.to_vec(),
+                payload: record.payload.clone(),
             })
             .collect(),
     }

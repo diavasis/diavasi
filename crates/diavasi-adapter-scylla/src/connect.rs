@@ -23,6 +23,11 @@ pub struct ScyllaEndpoint {
 impl ScyllaEndpoint {
     pub fn from_request(request: &SourceOpen) -> Result<Self, String> {
         let cfg = &request.connection.config_json;
+        diavasi::runtime::check_keys(
+            cfg,
+            &["host", "port", "keyspace", "user", "username", "tls"],
+            "config_json",
+        )?;
         let host = cfg
             .get("host")
             .and_then(|v| v.as_str())
@@ -38,12 +43,14 @@ impl ScyllaEndpoint {
                     .to_string(),
             ),
         };
-        let username = match cfg.get("username") {
+        // `user` is the name every adapter uses; `username` is accepted from
+        // connections created before v0.13.
+        let username = match cfg.get("user").or_else(|| cfg.get("username")) {
             None => None,
             Some(value) => Some(
                 value
                     .as_str()
-                    .ok_or("config_json.username must be a string")?
+                    .ok_or("config_json.user must be a string")?
                     .to_string(),
             ),
         };
@@ -103,7 +110,7 @@ impl ScyllaEndpoint {
             cfg["keyspace"] = serde_json::Value::from(keyspace.clone());
         }
         if let Some(username) = &self.username {
-            cfg["username"] = serde_json::Value::from(username.clone());
+            cfg["user"] = serde_json::Value::from(username.clone());
         }
         cfg
     }
@@ -196,7 +203,7 @@ mod tests {
         assert_eq!(endpoint.host, "127.0.0.1");
         assert_eq!(endpoint.port, 9042);
         assert!(endpoint.secret().is_empty());
-        assert!(endpoint.config_json().get("username").is_none());
+        assert!(endpoint.config_json().get("user").is_none());
     }
 
     #[test]
@@ -221,6 +228,6 @@ mod tests {
         let endpoint = ScyllaEndpoint::from_request(&request).unwrap();
         assert_eq!(endpoint.secret(), "pw");
         assert!(endpoint.tls);
-        assert_eq!(endpoint.config_json()["username"], "app");
+        assert_eq!(endpoint.config_json()["user"], "app");
     }
 }

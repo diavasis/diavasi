@@ -46,14 +46,13 @@ fn subtle_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
-pub async fn require_bearer<S>(
-    axum::extract::State(auth): axum::extract::State<S>,
+/// Axum middleware: pass the request on when `Authorization: Bearer <token>`
+/// satisfies `auth`, otherwise answer 401.
+pub async fn require_bearer(
+    axum::extract::State(auth): axum::extract::State<std::sync::Arc<dyn AuthValidator>>,
     req: Request<Body>,
     next: Next,
-) -> Response
-where
-    S: AuthValidator + Clone,
-{
+) -> Response {
     let header = req
         .headers()
         .get(header::AUTHORIZATION)

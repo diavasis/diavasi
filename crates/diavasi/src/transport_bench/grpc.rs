@@ -7,8 +7,8 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming, transport::Server};
 use tracing::{info, warn};
 
-use crate::protocol::pb::bench_stream_server::{BenchStream, BenchStreamServer};
-use crate::protocol::{Envelope, envelope};
+use crate::bench_protocol::pb::bench_stream_server::{BenchStream, BenchStreamServer};
+use crate::bench_protocol::{Envelope, envelope};
 
 use super::config::{BenchConfig, Role};
 use super::metrics::Metrics;
@@ -135,7 +135,7 @@ async fn run_server(cfg: BenchConfig) -> anyhow::Result<()> {
 }
 
 async fn run_client(cfg: BenchConfig) -> anyhow::Result<BenchResult> {
-    use crate::protocol::pb::bench_stream_client::BenchStreamClient;
+    use crate::bench_protocol::pb::bench_stream_client::BenchStreamClient;
 
     let endpoint = format!("http://{}", cfg.connect);
     let mut client = BenchStreamClient::connect(endpoint).await?;

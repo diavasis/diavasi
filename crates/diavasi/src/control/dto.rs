@@ -110,13 +110,48 @@ pub struct ErrorBody {
     pub error: String,
 }
 
+/// Longest group, connection, or consumer id.
+pub const MAX_ID_LEN: usize = 128;
+/// Shortest batch timeout. A shorter one requeues batches faster than a
+/// consumer can ack them.
+pub const MIN_BATCH_TIMEOUT_MS: u64 = 100;
+
+/// Ids appear in URL paths and metric labels: 1 to [`MAX_ID_LEN`] characters
+/// from `A-Z a-z 0-9 . _ - :`.
+pub fn check_id(what: &str, id: &str) -> Result<(), String> {
+    let valid = !id.is_empty()
+        && id.len() <= MAX_ID_LEN
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ':'));
+    if valid {
+        Ok(())
+    } else {
+        Err(format!(
+            "{what} must be 1 to {MAX_ID_LEN} characters from A-Z a-z 0-9 . _ - :"
+        ))
+    }
+}
+
 pub fn group_config_from_create(req: &GroupCreateRequest) -> Result<GroupConfig, String> {
+    check_id("group id", &req.group_id)?;
     let group_id = crate::core::GroupId::new(req.group_id.clone()).map_err(|e| e.to_string())?;
     if req.batch_max_records == 0 {
         return Err("batch_max_records must be non-zero".into());
     }
     if req.max_buffer_records == 0 {
         return Err("max_buffer_records must be non-zero".into());
+    }
+    if req.max_buffer_bytes == 0 {
+        return Err("max_buffer_bytes must be non-zero".into());
+    }
+    if req.batch_max_records > req.max_buffer_records {
+        return Err("batch_max_records must not exceed max_buffer_records".into());
+    }
+    if req.batch_timeout_ms < MIN_BATCH_TIMEOUT_MS {
+        return Err(format!(
+            "batch_timeout_ms must be at least {MIN_BATCH_TIMEOUT_MS}"
+        ));
     }
     Ok(GroupConfig {
         group_id,

@@ -15,7 +15,13 @@ pub trait StateStore: Send + Sync {
     fn list_connections(&self) -> StoreResult<Vec<ConnectionRecord>>;
     fn delete_connection(&self, id: &str) -> StoreResult<()>;
 
+    /// Insert or replace a group record.
     fn put_group(&self, group: &GroupRecord) -> StoreResult<()>;
+
+    /// Create a group and its checkpoint in one transaction. Fails with
+    /// [`StoreError::GroupExists`](super::StoreError::GroupExists) when the id
+    /// is taken, and then changes nothing.
+    fn insert_group(&self, group: &GroupRecord, cursor: &LogicalCursor) -> StoreResult<()>;
     fn get_group(&self, id: &GroupId) -> StoreResult<Option<GroupRecord>>;
     fn list_groups(&self) -> StoreResult<Vec<GroupRecord>>;
     fn delete_group(&self, id: &GroupId) -> StoreResult<()>;
@@ -25,7 +31,9 @@ pub trait StateStore: Send + Sync {
     /// Persist only the committed cursor (single write transaction).
     fn commit_checkpoint(&self, id: &GroupId, cursor: &LogicalCursor) -> StoreResult<()>;
 
-    /// Atomically persist group metadata and committed cursor.
+    /// Atomically persist group metadata and committed cursor. Fails with
+    /// [`StoreError::GroupNotFound`](super::StoreError::GroupNotFound) when
+    /// the group was deleted, so a running group cannot recreate it.
     fn commit_progress(&self, group: &GroupRecord, cursor: &LogicalCursor) -> StoreResult<()>;
 
     /// Like [`commit_progress`], but invokes `before_commit` after staging writes

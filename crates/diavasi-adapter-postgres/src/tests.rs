@@ -21,10 +21,18 @@ use crate::spec::SourceSpec;
 
 static N: AtomicU64 = AtomicU64::new(0);
 
+/// Reads a database URL. With `DIAVASI_REQUIRE_DB=1` a missing URL fails the
+/// test instead of skipping it.
+fn env_url(name: &str) -> Option<String> {
+    let url = std::env::var(name).ok().filter(|url| !url.is_empty());
+    if url.is_none() && std::env::var("DIAVASI_REQUIRE_DB").as_deref() == Ok("1") {
+        panic!("DIAVASI_REQUIRE_DB=1 but {name} is not set");
+    }
+    url
+}
+
 fn database_url() -> Option<String> {
-    std::env::var("DATABASE_URL")
-        .ok()
-        .filter(|url| !url.is_empty())
+    env_url("DATABASE_URL")
 }
 
 struct Cleanup {
@@ -36,7 +44,7 @@ impl Drop for Cleanup {
     fn drop(&mut self) {
         let endpoint = self.endpoint.clone();
         let table = self.table.clone();
-        tokio::spawn(async move {
+        cleanup_blocking(move || async move {
             if let Ok(client) = connect(&endpoint).await {
                 let _ = client
                     .batch_execute(&format!("DROP TABLE IF EXISTS {table}"))
@@ -44,6 +52,24 @@ impl Drop for Cleanup {
             }
         });
     }
+}
+
+/// Run async cleanup to completion on its own thread and runtime. `Drop`
+/// runs as a test ends, when a task spawned on the test's runtime would never
+/// run and the table or stream would be left behind.
+fn cleanup_blocking<F>(work: impl FnOnce() -> F + Send + 'static)
+where
+    F: std::future::Future<Output = ()>,
+{
+    let _ = std::thread::spawn(move || {
+        if let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            runtime.block_on(work());
+        }
+    })
+    .join();
 }
 
 struct Lab {
@@ -458,8 +484,7 @@ async fn delete_and_payload_update_do_not_redeliver() {
         ))
         .await
         .unwrap();
-    tokio::time::sleep(Duration::from_millis(250)).await;
-    lab.service.supervise_once().await.unwrap();
+    await_restart(&lab.service, "g").await;
     handle.leave(&cid).await.ok();
     let rest = drain_i64(&lab.service, "g", "c2").await;
     assert_eq!(rest, vec![2]);
@@ -512,8 +537,7 @@ async fn ordering_column_update_breaks_the_contract() {
         )
         .await
         .unwrap();
-    tokio::time::sleep(Duration::from_millis(250)).await;
-    lab.service.supervise_once().await.unwrap();
+    await_restart(&lab.service, "g").await;
     handle.leave(&cid).await.ok();
     let rest = drain_i64(&lab.service, "g", "c2").await;
     assert_eq!(
@@ -646,8 +670,7 @@ async fn two_consumers_and_crash_cover_the_uncommitted_tail() {
         .await
         .abort_group(&GroupId::new("g2").unwrap())
         .unwrap();
-    tokio::time::sleep(Duration::from_millis(250)).await;
-    lab.service.supervise_once().await.unwrap();
+    await_restart(&lab.service, "g2").await;
     let mut ids = drain_i64(&lab.service, "g2", "resume").await;
     ids.sort();
     assert_eq!(ids, vec![1, 2, 3, 4]);
@@ -840,12 +863,6 @@ async fn millions_of_rows() {
     lab.group("g", spec, 500).await;
     let ids = drain_i64(&lab.service, "g", "c").await;
     assert_eq!(ids.len(), 1_000_000);
-}
-
-#[test]
-fn factory_helper_builds_the_installed_factory() {
-    let _ = crate::factory();
-    assert_eq!(crate::NAME, "postgres");
 }
 
 fn describe_err(
@@ -1046,4 +1063,130 @@ async fn fetch_limit_zero_and_bad_cursor() {
     let wide = Some(OrderingValue::new(vec![OrderingAtom::I64(1), OrderingAtom::I64(2)]).unwrap());
     let err = source.fetch_after(&wide, 1).await.unwrap_err();
     assert!(err.to_string().contains("cursor width"));
+}
+
+/// Drive the supervisor until `group` runs again after an abort. Restarts
+/// wait at least `RETRY_FIRST`, and the aborted task stays listed until the
+/// supervisor collects it.
+async fn await_restart(service: &ControlService, group: &str) {
+    let gid = GroupId::new(group).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let running = || async { service.supervisor().lock().await.get_handle(&gid).is_some() };
+    while running().await {
+        service.supervise_once().await.unwrap();
+        assert!(
+            std::time::Instant::now() < deadline,
+            "aborted group was not collected"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    while !running().await {
+        service.supervise_once().await.unwrap();
+        assert!(
+            std::time::Instant::now() < deadline,
+            "group {group} was not restarted"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+// Regression tests for the v0.12.0 review. Each name carries its finding id.
+
+async fn try_group(
+    lab: &Lab,
+    id: &str,
+    spec: serde_json::Value,
+) -> Result<(), diavasi::control::ControlError> {
+    let n = lab.table.rsplit('_').next().unwrap();
+    lab.service
+        .create_group(GroupCreateRequest {
+            group_id: id.into(),
+            total_records: 0,
+            payload_size: 1,
+            max_buffer_records: 256,
+            max_buffer_bytes: 8 * 1024 * 1024,
+            batch_max_records: 16,
+            batch_timeout_ms: 5_000,
+            ordering_contract: "postgres-keyset".into(),
+            connection_id: Some(format!("pg{n}")),
+            source_spec: Some(spec),
+        })
+        .await
+        .map(|_| ())
+}
+
+/// B1: an order that is only a prefix of a unique index is not unique, so
+/// keyset resume would skip rows. It needs `acknowledge_unsafe`. An order
+/// that starts with every column of a unique index is accepted.
+#[tokio::test]
+async fn regress_b01_prefix_of_a_composite_unique_index_is_not_unique() {
+    let Some(lab) =
+        Lab::open("a int8 not null, b int8 not null, note text not null, unique (a, b)").await
+    else {
+        return;
+    };
+    let order = |cols: &[(&str, &str)]| {
+        serde_json::Value::Array(
+            cols.iter()
+                .map(|(column, ty)| serde_json::json!({"column": column, "type": ty}))
+                .collect(),
+        )
+    };
+    let prefix = SourceSpec::parse(&lab.spec(order(&[("a", "int8")]), &["note"], None)).unwrap();
+    let err = describe(&lab.admin, &prefix)
+        .await
+        .err()
+        .expect("order_by [a] accepted although only (a, b) is unique");
+    assert!(err.contains("unique"), "{err}");
+
+    let exact =
+        SourceSpec::parse(&lab.spec(order(&[("a", "int8"), ("b", "int8")]), &["note"], None))
+            .unwrap();
+    describe(&lab.admin, &exact)
+        .await
+        .expect("order_by [a, b] matches the unique index");
+
+    let longer = SourceSpec::parse(&lab.spec(
+        order(&[("a", "int8"), ("b", "int8"), ("note", "text")]),
+        &["note"],
+        None,
+    ))
+    .unwrap();
+    describe(&lab.admin, &longer)
+        .await
+        .expect("order_by [a, b, note] starts with the unique index");
+}
+
+/// B14: a filter cannot close its own parentheses and bypass the keyset.
+#[tokio::test]
+async fn regress_b14_filter_cannot_escape_its_parentheses() {
+    let Some(lab) = Lab::open("id int8 primary key, note text not null").await else {
+        return;
+    };
+    let spec = lab.spec(int_order("id", "int8"), &["note"], Some("true) OR (true"));
+    assert!(
+        try_group(&lab, "g", spec).await.is_err(),
+        "a filter that escapes its parentheses was accepted"
+    );
+}
+
+/// B14: `--` inside a string literal is data, not a comment.
+#[tokio::test]
+async fn regress_b14_filter_may_contain_double_dash_in_a_literal() {
+    let Some(lab) = Lab::open("id int8 primary key, note text not null").await else {
+        return;
+    };
+    lab.admin
+        .batch_execute(&format!(
+            "INSERT INTO {} (id, note) VALUES (1, 'a--b'), (2, 'keep')",
+            lab.table
+        ))
+        .await
+        .unwrap();
+    let spec = lab.spec(int_order("id", "int8"), &["note"], Some("note <> 'a--b'"));
+    try_group(&lab, "g", spec)
+        .await
+        .expect("a literal containing -- was rejected");
+    lab.service.start_group("g").await.unwrap();
+    assert_eq!(drain_i64(&lab.service, "g", "c").await, vec![2]);
 }

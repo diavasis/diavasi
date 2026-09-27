@@ -5,15 +5,25 @@ use tokio_postgres::{Client, Config};
 
 use diavasi::runtime::SourceOpen;
 
+/// How to reach one database. The sealed secret is the password.
 #[derive(Clone)]
 pub struct PgEndpoint {
     pub config: Config,
+    /// Connect with TLS and verify the server certificate.
     pub tls: bool,
+    /// PEM CA certificates that sign the server certificate. `None` trusts
+    /// the public web roots.
+    pub ca_pem: Option<String>,
 }
 
 impl PgEndpoint {
     pub fn from_request(request: &SourceOpen) -> Result<Self, String> {
         let cfg = &request.connection.config_json;
+        diavasi::runtime::check_keys(
+            cfg,
+            &["host", "port", "dbname", "user", "sslmode", "ca_pem"],
+            "config_json",
+        )?;
         let host = cfg
             .get("host")
             .and_then(|v| v.as_str())
@@ -32,10 +42,20 @@ impl PgEndpoint {
             .get("sslmode")
             .and_then(|v| v.as_str())
             .unwrap_or("disable");
+        // `require` verifies the certificate, as `verify-full` does. That is
+        // stricter than libpq, whose `require` skips verification.
         let tls = match sslmode {
             "disable" => false,
-            "require" => true,
+            "require" | "verify-full" => true,
             other => return Err(format!("sslmode {other} is not supported")),
+        };
+        let ca_pem = match cfg.get("ca_pem") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::String(pem)) if tls => Some(pem.clone()),
+            Some(serde_json::Value::String(_)) => {
+                return Err("config_json.ca_pem needs sslmode require or verify-full".into());
+            }
+            Some(_) => return Err("config_json.ca_pem must be a PEM string".into()),
         };
         let password = String::from_utf8(request.secret.clone())
             .map_err(|_| "secret must be a utf-8 password")?;
@@ -46,7 +66,11 @@ impl PgEndpoint {
         config.user(user);
         config.password(password);
         config.connect_timeout(Duration::from_secs(5));
-        Ok(Self { config, tls })
+        Ok(Self {
+            config,
+            tls,
+            ca_pem,
+        })
     }
 
     pub fn from_database_url(url: &str) -> Result<(Self, String), String> {
@@ -56,7 +80,18 @@ impl PgEndpoint {
             .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
             .filter(|password| !password.is_empty())
             .ok_or("DATABASE_URL must include a password")?;
-        Ok((Self { config, tls: false }, password))
+        let tls = matches!(
+            config.get_ssl_mode(),
+            tokio_postgres::config::SslMode::Require
+        );
+        Ok((
+            Self {
+                config,
+                tls,
+                ca_pem: None,
+            },
+            password,
+        ))
     }
 
     pub fn config_json(&self) -> serde_json::Value {
@@ -74,9 +109,10 @@ impl PgEndpoint {
     }
 }
 
-fn connect_err(err: tokio_postgres::Error) -> String {
+/// The error and every error it wraps, joined with `: `.
+pub(crate) fn error_chain(err: &tokio_postgres::Error) -> String {
     let mut message = err.to_string();
-    let mut source = std::error::Error::source(&err);
+    let mut source = std::error::Error::source(err);
     while let Some(inner) = source {
         message.push_str(": ");
         message.push_str(&inner.to_string());
@@ -89,7 +125,25 @@ pub async fn connect(endpoint: &PgEndpoint) -> Result<Client, String> {
     if endpoint.tls {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let mut roots = rustls::RootCertStore::empty();
-        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        match &endpoint.ca_pem {
+            Some(pem) => {
+                use rustls::pki_types::CertificateDer;
+                use rustls::pki_types::pem::PemObject;
+
+                let mut added = 0;
+                for cert in CertificateDer::pem_slice_iter(pem.as_bytes()) {
+                    let cert = cert.map_err(|err| format!("config_json.ca_pem: {err}"))?;
+                    roots
+                        .add(cert)
+                        .map_err(|err| format!("config_json.ca_pem: {err}"))?;
+                    added += 1;
+                }
+                if added == 0 {
+                    return Err("config_json.ca_pem holds no certificate".into());
+                }
+            }
+            None => roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned()),
+        }
         let tls = rustls::ClientConfig::builder()
             .with_root_certificates(roots)
             .with_no_client_auth();
@@ -98,7 +152,7 @@ pub async fn connect(endpoint: &PgEndpoint) -> Result<Client, String> {
             .config
             .connect(connector)
             .await
-            .map_err(connect_err)?;
+            .map_err(|err| error_chain(&err))?;
         tokio::spawn(async move {
             if let Err(err) = connection.await {
                 tracing::debug!("postgres tls connection ended: {err}");
@@ -106,7 +160,11 @@ pub async fn connect(endpoint: &PgEndpoint) -> Result<Client, String> {
         });
         Ok(client)
     } else {
-        let (client, connection) = endpoint.config.connect(NoTls).await.map_err(connect_err)?;
+        let (client, connection) = endpoint
+            .config
+            .connect(NoTls)
+            .await
+            .map_err(|err| error_chain(&err))?;
         tokio::spawn(async move {
             if let Err(err) = connection.await {
                 tracing::debug!("postgres connection ended: {err}");
@@ -211,7 +269,7 @@ mod tests {
                 serde_json::json!({
                     "dbname": "diavasi",
                     "user": "diavasi",
-                    "sslmode": "verify-full",
+                    "sslmode": "verify-ca",
                 }),
                 b"secret".to_vec()
             )))
@@ -237,7 +295,12 @@ mod tests {
         let mut config = Config::new();
         config.user("diavasi");
         config.password("secret");
-        let fallback = PgEndpoint { config, tls: false }.config_json();
+        let fallback = PgEndpoint {
+            config,
+            tls: false,
+            ca_pem: None,
+        }
+        .config_json();
         assert_eq!(fallback["host"], "localhost");
         assert_eq!(fallback["port"], 5432);
         assert_eq!(fallback["dbname"], "postgres");
@@ -252,9 +315,59 @@ mod tests {
         config.user("diavasi");
         config.password("diavasi");
         config.connect_timeout(Duration::from_millis(200));
-        let err = connect(&PgEndpoint { config, tls: true })
-            .await
-            .unwrap_err();
-        assert!(!err.is_empty());
+        let err = connect(&PgEndpoint {
+            config,
+            tls: true,
+            ca_pem: None,
+        })
+        .await
+        .unwrap_err();
+        let lower = err.to_lowercase();
+        assert!(
+            lower.contains("connection refused") || lower.contains("error connecting"),
+            "{err}"
+        );
+    }
+
+    /// B22: `verify-full` is accepted, `ca_pem` needs TLS, and a CA that
+    /// holds no certificate fails the connect.
+    #[tokio::test]
+    async fn tls_modes_and_ca_pem() {
+        let base = serde_json::json!({"dbname": "diavasi", "user": "diavasi"});
+        let with = |extra: serde_json::Value| {
+            let mut cfg = base.clone();
+            for (key, value) in extra.as_object().unwrap() {
+                cfg[key] = value.clone();
+            }
+            PgEndpoint::from_request(&request(cfg, b"secret".to_vec()))
+        };
+        assert!(
+            with(serde_json::json!({"sslmode": "verify-full"}))
+                .unwrap()
+                .tls
+        );
+        assert!(
+            expect_err(with(serde_json::json!({"ca_pem": "x"}))).contains("sslmode"),
+            "ca_pem without TLS"
+        );
+        assert!(expect_err(with(serde_json::json!({"passwrd": "x"}))).contains("passwrd"));
+        let endpoint = with(serde_json::json!({
+            "host": "127.0.0.1",
+            "port": 1,
+            "sslmode": "require",
+            "ca_pem": "not a certificate",
+        }))
+        .unwrap();
+        let err = connect(&endpoint).await.unwrap_err();
+        assert!(err.contains("no certificate"), "{err}");
+    }
+
+    #[test]
+    fn database_url_sslmode_require_turns_on_tls() {
+        let (endpoint, _) = PgEndpoint::from_database_url(
+            "postgres://diavasi:secret@127.0.0.1:5432/diavasi?sslmode=require",
+        )
+        .unwrap();
+        assert!(endpoint.tls);
     }
 }

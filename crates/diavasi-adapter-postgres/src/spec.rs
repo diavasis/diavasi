@@ -1,3 +1,4 @@
+use diavasi::runtime::check_keys;
 use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +61,17 @@ pub struct SourceSpec {
 
 impl SourceSpec {
     pub fn parse(value: &Value) -> Result<Self, String> {
+        check_keys(
+            value,
+            &[
+                "table",
+                "order_by",
+                "payload",
+                "filter",
+                "acknowledge_unsafe",
+            ],
+            "source_spec",
+        )?;
         let table = value
             .get("table")
             .and_then(|v| v.as_str())
@@ -74,6 +86,7 @@ impl SourceSpec {
         }
         let mut cols = Vec::new();
         for col in order_by {
+            check_keys(col, &["column", "type"], "order_by entry")?;
             let name = col
                 .get("column")
                 .and_then(|v| v.as_str())
@@ -116,10 +129,11 @@ impl SourceSpec {
             }
             Some(_) => return Err("source_spec.filter must be a string".into()),
         };
-        let acknowledge_unsafe = value
-            .get("acknowledge_unsafe")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        let acknowledge_unsafe = match value.get("acknowledge_unsafe") {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(flag)) => *flag,
+            Some(_) => return Err("source_spec.acknowledge_unsafe must be a bool".into()),
+        };
         Ok(Self {
             schema,
             table,
@@ -168,13 +182,50 @@ fn split_table(table: &str) -> Result<(String, String), String> {
     }
 }
 
+/// Reject a filter that could escape the `(<filter>)` it is placed in, add a
+/// statement, or hide text in a comment. The scan skips quoted literals and
+/// identifiers, so `note <> 'a--b'` is accepted. Outside quotes it rejects
+/// `;`, `--`, `/*`, `*/`, `$`, and parentheses that do not balance.
 fn check_filter(filter: &str) -> Result<(), String> {
-    if filter.contains(';')
-        || filter.contains("--")
-        || filter.contains("/*")
-        || filter.contains("*/")
-    {
-        return Err("filter must not contain comments or extra statements".into());
+    let chars: Vec<char> = filter.chars().collect();
+    let mut depth = 0usize;
+    let mut i = 0;
+    while i < chars.len() {
+        let next = chars.get(i + 1).copied();
+        match chars[i] {
+            quote @ ('\'' | '"') => {
+                i += 1;
+                loop {
+                    match chars.get(i) {
+                        None => return Err("filter has an unterminated quote".into()),
+                        Some('\\') if quote == '\'' => {
+                            return Err("filter literals must not contain a backslash".into());
+                        }
+                        Some(&c) if c == quote && chars.get(i + 1) == Some(&quote) => i += 2,
+                        Some(&c) if c == quote => break,
+                        Some(_) => i += 1,
+                    }
+                }
+            }
+            ';' => return Err("filter must not contain extra statements".into()),
+            '-' if next == Some('-') => return Err("filter must not contain comments".into()),
+            '/' if next == Some('*') => return Err("filter must not contain comments".into()),
+            '*' if next == Some('/') => return Err("filter must not contain comments".into()),
+            '$' => {
+                return Err("filter must not contain `$` (parameters or dollar quoting)".into());
+            }
+            '(' => depth += 1,
+            ')' => {
+                depth = depth
+                    .checked_sub(1)
+                    .ok_or("filter has a `)` without a matching `(`")?;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    if depth != 0 {
+        return Err("filter has a `(` without a matching `)`".into());
     }
     Ok(())
 }
@@ -232,11 +283,20 @@ mod tests {
         assert!(
             spec(json!({"filter": "a; drop table t"}))
                 .unwrap_err()
-                .contains("comments")
+                .contains("statements")
         );
         assert!(spec(json!({"filter": "a -- b"})).is_err());
         assert!(spec(json!({"filter": "a /* b"})).is_err());
         assert!(spec(json!({"filter": "a */ b"})).is_err());
+        assert!(spec(json!({"filter": "true) OR (true"})).is_err());
+        assert!(spec(json!({"filter": "(a = 1"})).is_err());
+        assert!(spec(json!({"filter": "note = 'open"})).is_err());
+        assert!(spec(json!({"filter": "note = $1"})).is_err());
+        assert!(spec(json!({"filter": r"note = 'a\' OR true'"})).is_err());
+        assert!(
+            spec(json!({"filter": "note <> 'a--b' AND (n > 1 OR \"odd;name\" = 'x')"})).is_ok()
+        );
+        assert!(spec(json!({"filter": "note = 'it''s'"})).is_ok());
         assert!(
             spec(json!({"table": "a.b.c"}))
                 .unwrap_err()
@@ -275,5 +335,17 @@ mod tests {
             assert_eq!(ty.typname(), name);
             assert_eq!(ty.collated(), collated);
         }
+    }
+
+    /// S2: a misspelled key is an error, not an option left at its default.
+    #[test]
+    fn rejects_unknown_keys_and_a_non_bool_flag() {
+        let typo = spec(json!({"filtr": "id > 1"})).unwrap_err();
+        assert!(typo.contains("filtr"), "{typo}");
+        let order = spec(json!({"order_by": [{"column": "id", "type": "int8", "dir": "asc"}]}))
+            .unwrap_err();
+        assert!(order.contains("dir"), "{order}");
+        let flag = spec(json!({"acknowledge_unsafe": "yes"})).unwrap_err();
+        assert!(flag.contains("bool"), "{flag}");
     }
 }

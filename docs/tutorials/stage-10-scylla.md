@@ -67,7 +67,7 @@ diavasi group create \
 diavasi group start events
 ```
 
-No `username` means the driver does not authenticate. The control plane still requires a non-empty secret, and that value is not sent to ScyllaDB. Set `username` when the server checks credentials; the secret is then the password.
+No `user` means the driver does not authenticate. The control plane still requires a non-empty secret, and that value is not sent to ScyllaDB. Set `user` when the server checks credentials; the secret is then the password.
 
 `partition` must name every partition key. Omitting both `partition` and `scan` fails at create. A token walk uses `"scan":"token"` and does not set `partition`.
 

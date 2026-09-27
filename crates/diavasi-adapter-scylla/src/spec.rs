@@ -1,5 +1,6 @@
 //! `source_spec` for a ScyllaDB table, and the cursor encoding.
 
+use diavasi::core::encoding;
 use diavasi::core::{OrderingAtom, OrderingValue};
 use scylla::value::{CqlDate, CqlTimestamp, CqlValue};
 use serde_json::{Map, Value};
@@ -180,71 +181,17 @@ pub fn quote_ident(name: &str) -> String {
 
 /// Map a signed value so a descending field still increases along the stream.
 pub fn order_i64(value: i64, direction: Direction) -> i64 {
-    match direction {
-        Direction::Asc => value,
-        Direction::Desc => !value,
-    }
+    encoding::order_i64(value, direction == Direction::Desc)
 }
 
+/// Bytes the cursor stores. See [`encoding::order_bytes`].
 pub fn canonical_to_atom_bytes(bytes: &[u8], direction: Direction) -> Vec<u8> {
-    match direction {
-        Direction::Asc => bytes.to_vec(),
-        Direction::Desc => encode_memcomparable(bytes)
-            .into_iter()
-            .map(|b| !b)
-            .collect(),
-    }
+    encoding::order_bytes(bytes, direction == Direction::Desc)
 }
 
+/// The value bytes of a cursor atom. See [`encoding::unorder_bytes`].
 pub fn atom_bytes_to_canonical(bytes: &[u8], direction: Direction) -> Result<Vec<u8>, String> {
-    match direction {
-        Direction::Asc => Ok(bytes.to_vec()),
-        Direction::Desc => {
-            let flipped: Vec<u8> = bytes.iter().copied().map(|b| !b).collect();
-            decode_memcomparable(&flipped)
-        }
-    }
-}
-
-fn encode_memcomparable(src: &[u8]) -> Vec<u8> {
-    let mut buf = Vec::new();
-    let mut index = 0;
-    loop {
-        let remain = src.len().saturating_sub(index);
-        let n = remain.min(8);
-        let mut group = [0u8; 9];
-        if n > 0 {
-            group[..n].copy_from_slice(&src[index..index + n]);
-        }
-        group[8] = n as u8;
-        buf.extend_from_slice(&group);
-        if n < 8 {
-            break;
-        }
-        index += 8;
-    }
-    buf
-}
-
-fn decode_memcomparable(src: &[u8]) -> Result<Vec<u8>, String> {
-    if src.is_empty() || src.len() % 9 != 0 {
-        return Err("bad ordered bytes".into());
-    }
-    let mut out = Vec::new();
-    for group in src.chunks_exact(9) {
-        let n = group[8] as usize;
-        if n > 8 {
-            return Err("bad ordered bytes".into());
-        }
-        if group[n..8].iter().any(|byte| *byte != 0) {
-            return Err("bad ordered bytes".into());
-        }
-        out.extend_from_slice(&group[..n]);
-        if n < 8 {
-            return Ok(out);
-        }
-    }
-    Err("ordered bytes ended on a full group".into())
+    encoding::unorder_bytes(bytes, direction == Direction::Desc)
 }
 
 pub fn json_to_cql(ty: KeyType, value: &Value) -> Result<CqlValue, String> {

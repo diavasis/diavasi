@@ -25,6 +25,9 @@ if [[ -z "${SCYLLA_URL:-}" ]]; then
   export SCYLLA_URL="127.0.0.1:9042"
 fi
 
+# Database tests fail instead of skipping when a URL is missing.
+export DIAVASI_REQUIRE_DB=1
+
 # Library line coverage stays near 88% when the Postgres adapter tests run.
 # The Stage 0 transport harness and the Stage 7 end-to-end bench are not
 # exercised by `cargo test`, so they are left out of this number.

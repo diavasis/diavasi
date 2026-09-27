@@ -5,7 +5,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio_util::codec::Framed;
 use tracing::{info, warn};
 
-use crate::protocol::{Envelope, envelope};
+use crate::bench_protocol::{Envelope, envelope};
 
 use super::codec::EnvelopeCodec;
 use super::config::{BenchConfig, Role};

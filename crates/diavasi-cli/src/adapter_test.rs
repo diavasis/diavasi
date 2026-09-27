@@ -211,7 +211,6 @@ async fn prepare_redis(test: &AdapterTest) -> Result<Prepared, String> {
         },
         source_spec: serde_json::json!({
             "stream": test.object,
-            "group": format!("{}-g", test.object),
         }),
         ordering_contract: "redis-stream".into(),
     })
@@ -314,6 +313,7 @@ async fn consume(test: &AdapterTest, prepared: &Prepared) -> Result<Report, Stri
         tls_cert: None,
         tls_key: None,
         source_factory: Some(Arc::new(RoutingFactory::installed())),
+        checkpoint_interval: std::time::Duration::ZERO,
     };
     let server = tokio::spawn(async move {
         if let Err(err) = serve(config).await {
@@ -404,8 +404,11 @@ async fn consume_group(
     .await
     .map_err(|err| err.to_string())?;
     let elapsed = started.elapsed();
+    // Delivery is at-least-once: a record can arrive twice. Every seeded
+    // record must arrive; repeats are reported, not failures. Redis ids are
+    // two integers, so `record_id` is 0 there and only the count is checked.
     let deliveries = report.record_ids.len() as u64;
-    if deliveries != test.records {
+    if deliveries < test.records {
         return Err(format!(
             "expected {} deliveries, got {deliveries}",
             test.records
@@ -418,7 +421,7 @@ async fn consume_group(
             .copied()
             .collect::<HashSet<_>>()
             .len() as u64;
-        if distinct != test.records {
+        if distinct < test.records {
             return Err(format!(
                 "expected {} distinct ids, got {distinct}",
                 test.records
@@ -526,6 +529,16 @@ async fn post(
 mod tests {
     use super::*;
 
+    /// Reads a database URL. With `DIAVASI_REQUIRE_DB=1` a missing URL fails the
+    /// test instead of skipping it.
+    fn env_url(name: &str) -> Option<String> {
+        let url = std::env::var(name).ok().filter(|url| !url.is_empty());
+        if url.is_none() && std::env::var("DIAVASI_REQUIRE_DB").as_deref() == Ok("1") {
+            panic!("DIAVASI_REQUIRE_DB=1 but {name} is not set");
+        }
+        url
+    }
+
     fn sample(adapter: AdapterKind, object: &str) -> AdapterTest {
         AdapterTest {
             adapter,
@@ -554,11 +567,7 @@ mod tests {
 
     #[tokio::test]
     async fn postgres_seed_and_consume() {
-        if std::env::var("DATABASE_URL")
-            .ok()
-            .filter(|url| !url.is_empty())
-            .is_none()
-        {
+        if env_url("DATABASE_URL").is_none() {
             return;
         }
         let object = format!("dt_pg_{}", std::process::id());
@@ -569,11 +578,7 @@ mod tests {
 
     #[tokio::test]
     async fn mongodb_seed_and_consume() {
-        if std::env::var("MONGODB_URL")
-            .ok()
-            .filter(|url| !url.is_empty())
-            .is_none()
-        {
+        if env_url("MONGODB_URL").is_none() {
             return;
         }
         let object = format!("dt_mg_{}", std::process::id());
@@ -584,11 +589,7 @@ mod tests {
 
     #[tokio::test]
     async fn redis_seed_and_consume() {
-        if std::env::var("REDIS_URL")
-            .ok()
-            .filter(|url| !url.is_empty())
-            .is_none()
-        {
+        if env_url("REDIS_URL").is_none() {
             return;
         }
         let object = format!("dt_rd_{}", std::process::id());
@@ -599,11 +600,7 @@ mod tests {
 
     #[tokio::test]
     async fn scylla_seed_and_consume() {
-        if std::env::var("SCYLLA_URL")
-            .ok()
-            .filter(|url| !url.is_empty())
-            .is_none()
-        {
+        if env_url("SCYLLA_URL").is_none() {
             return;
         }
         let object = format!("dt_sy_{}", std::process::id());

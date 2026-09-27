@@ -30,18 +30,9 @@ pub enum CrashAction {
 /// Test hook: return [`CrashAction::Abort`] to simulate process death.
 pub type CrashHook = Arc<dyn Fn(CrashPoint) -> CrashAction + Send + Sync>;
 
-/// Default hook that never aborts.
+/// The hook every group starts with: it never aborts.
 pub fn no_crash() -> CrashHook {
     Arc::new(|_| CrashAction::Continue)
-}
-
-/// Convenience type alias documentation helper.
-pub struct NoCrash;
-
-impl NoCrash {
-    pub fn hook() -> CrashHook {
-        no_crash()
-    }
 }
 
 pub(crate) fn check_crash(hook: &CrashHook, point: CrashPoint) -> StoreResult<()> {

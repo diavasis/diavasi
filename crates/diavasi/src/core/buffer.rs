@@ -74,6 +74,10 @@ impl BoundedBuffer {
         Ok(())
     }
 
+    pub fn front(&self) -> Option<&Record> {
+        self.records.front()
+    }
+
     pub fn pop_front(&mut self) -> Option<Record> {
         let record = self.records.pop_front()?;
         self.bytes = self.bytes.saturating_sub(record.byte_len());

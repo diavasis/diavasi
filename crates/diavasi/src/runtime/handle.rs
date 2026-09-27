@@ -53,6 +53,18 @@ impl GroupHandle {
             .await
     }
 
+    /// Assign a batch, waiting up to `wait` for records. Answers `NoWork`
+    /// only after the wait, so an idle consumer does not poll.
+    pub async fn assign_wait(&self, consumer: &ConsumerId, wait: Duration) -> RuntimeResult<Batch> {
+        let consumer = consumer.clone();
+        self.call(|reply| RuntimeCommand::AssignWait {
+            consumer,
+            wait,
+            reply,
+        })
+        .await
+    }
+
     pub async fn ack(&self, batch_id: BatchId) -> RuntimeResult<()> {
         self.call(|reply| RuntimeCommand::Ack { batch_id, reply })
             .await
@@ -86,7 +98,14 @@ impl GroupHandle {
         self.call(|reply| RuntimeCommand::Drain { reply }).await
     }
 
+    /// Pause: the group records `Stopped` and its task exits.
     pub async fn stop(&self) -> RuntimeResult<()> {
         self.call(|reply| RuntimeCommand::Stop { reply }).await
+    }
+
+    /// Process shutdown: the group saves its progress, keeps its lifecycle,
+    /// and its task exits.
+    pub async fn shutdown(&self) -> RuntimeResult<()> {
+        self.call(|reply| RuntimeCommand::Shutdown { reply }).await
     }
 }

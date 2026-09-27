@@ -100,6 +100,7 @@ jobs:
       MONGODB_URL: mongodb://127.0.0.1:27017
       REDIS_URL: redis://127.0.0.1:6379
       SCYLLA_URL: 127.0.0.1:9042
+      DIAVASI_REQUIRE_DB: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -111,7 +112,7 @@ jobs:
         run: cargo test --all --all-features
       - name: stage 7 smoke
         run: >
-          cargo run -p diavasi-adapter-postgres --bin diavasi-e2e-bench --
+          cargo run -p diavasi-bench --bin diavasi-e2e-bench --
           --smoke --output /tmp/stage-07-smoke.jsonl
 
   coverage:

@@ -5,6 +5,7 @@
 mod ack;
 mod buffer;
 mod consumers;
+pub mod encoding;
 mod error;
 mod group;
 mod ids;
@@ -21,7 +22,7 @@ pub use ack::ContiguousCommitTracker;
 pub use buffer::BoundedBuffer;
 pub use consumers::ConsumerRegistry;
 pub use error::{CoreError, CoreResult};
-pub use group::{GroupConfig, GroupEngine, GroupSnapshot};
+pub use group::{AckOutcome, GroupConfig, GroupEngine, GroupSnapshot, MAX_BATCH_BYTES};
 pub use ids::{BatchId, ConsumerId, GroupId};
 pub use inflight::{Assignment, InFlightTracker};
 pub use lifecycle::GroupLifecycle;

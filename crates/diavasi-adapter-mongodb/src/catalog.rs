@@ -37,7 +37,7 @@ pub async fn ensure_contract(
     }
     if !matched {
         return Err(
-            "order fields are not a prefix of a unique index; set acknowledge_unsafe to accept the risk"
+            "order fields must start with every field of a unique index; set acknowledge_unsafe to accept the risk"
                 .into(),
         );
     }
@@ -77,16 +77,16 @@ fn is_builtin_id(keys: &Document) -> bool {
     }
 }
 
+/// True when the sort begins with every field of the index key, in key order.
+/// Only then is the sort tuple unique. Uniqueness does not depend on direction,
+/// so only field names are compared.
 fn covers(keys: &Document, spec: &SourceSpec) -> bool {
-    if keys.len() < spec.order_by.len() {
+    if keys.is_empty() || keys.len() > spec.order_by.len() {
         return false;
     }
-    for (wanted, (name, value)) in spec.order_by.iter().zip(keys.iter()) {
-        if name != &wanted.field || direction_of(value) != Some(wanted.direction.mongo()) {
-            return false;
-        }
-    }
-    true
+    keys.iter()
+        .zip(spec.order_by.iter())
+        .all(|((name, value), wanted)| name == &wanted.field && direction_of(value).is_some())
 }
 
 fn direction_of(value: &Bson) -> Option<i32> {

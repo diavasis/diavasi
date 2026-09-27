@@ -19,7 +19,7 @@ pub use client::{ConsumeReport, ConsumerClient, ConsumerOptions, SharedProgress}
 pub use error_codes::*;
 pub use server::{DataPlaneConfig, serve_dataplane};
 pub use session::{DEFAULT_MAX_IN_FLIGHT, Effect, Phase, Session, Step};
-pub use tls::{generate_self_signed, load_or_generate_pem};
+pub use tls::{generate_self_signed, load_or_generate_pem, load_pem};
 
 use pb::envelope::Body;
 
