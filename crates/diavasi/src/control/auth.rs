@@ -3,24 +3,48 @@ use axum::http::{Request, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 
-/// Extension point for control-plane authentication (no RBAC).
+/// Decides whether a request's bearer token is accepted. The router calls it
+/// for every route except `/health` and `/ready`.
+///
+/// Accept any of several tokens, for rotation:
+///
+/// ```
+/// use std::sync::Arc;
+/// use diavasi::control::AuthValidator;
+///
+/// struct TokenSet(Vec<String>);
+///
+/// impl AuthValidator for TokenSet {
+///     fn validate_bearer(&self, token: Option<&str>) -> bool {
+///         // A production check compares in constant time, as BearerTokenAuth does.
+///         token.is_some_and(|t| self.0.iter().any(|k| k == t))
+///     }
+/// }
+///
+/// let auth: Arc<dyn AuthValidator> = Arc::new(TokenSet(vec!["old".into(), "new".into()]));
+/// assert!(auth.validate_bearer(Some("new")));
+/// assert!(!auth.validate_bearer(None));
+/// ```
 pub trait AuthValidator: Send + Sync + 'static {
+    /// True when `token`, the text after `Bearer `, is accepted. `None` when the header is missing.
     fn validate_bearer(&self, token: Option<&str>) -> bool;
 }
 
-/// Simple shared-secret bearer token auth.
+/// One shared token, compared in constant time.
 #[derive(Clone)]
 pub struct BearerTokenAuth {
     token: String,
 }
 
 impl BearerTokenAuth {
+    /// Accept exactly `token`.
     pub fn new(token: impl Into<String>) -> Self {
         Self {
             token: token.into(),
         }
     }
 
+    /// The accepted token.
     pub fn token(&self) -> &str {
         &self.token
     }

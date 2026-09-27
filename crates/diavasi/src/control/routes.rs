@@ -23,6 +23,7 @@ pub struct AppState {
     pub auth: Arc<dyn AuthValidator>,
 }
 
+/// The control-plane routes. `docs/api.md` describes each one.
 pub fn router(state: AppState) -> Router {
     let authed = Router::new()
         .route("/v1/status", get(status))

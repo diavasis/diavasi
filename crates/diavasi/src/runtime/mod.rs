@@ -1,7 +1,13 @@
-//! Per-group Tokio runtime and supervisor (Stage 3).
+//! One task per running group, and the supervisor that starts, stops, and
+//! restarts them.
 //!
-//! One owner task per group mutates [`DurableGroup`](crate::store::DurableGroup)
-//! via a bounded command mailbox. No shared `Mutex` around the engine.
+//! Each group has an owner task that is the only code touching its
+//! [`DurableGroup`](crate::store::DurableGroup). Other code sends it
+//! [`RuntimeCommand`]s through a [`GroupHandle`]. An adapter source runs in
+//! a separate fetch task, so the owner never waits on the network.
+//! [`GroupSupervisor`] opens groups from the store, restarts failed ones
+//! with backoff, and pauses or shuts them down. Adapters plug in through
+//! [`SourceFactory`].
 
 mod command;
 mod error;

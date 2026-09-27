@@ -11,7 +11,36 @@ use super::error::{StoreError, StoreResult};
 use super::trait_::StateStore;
 use super::types::GroupRecord;
 
-/// Group engine with durable committed-cursor persistence.
+/// A [`GroupEngine`] whose committed cursor is written to a [`StateStore`].
+///
+/// ```
+/// use std::sync::Arc;
+/// use std::time::Duration;
+/// use diavasi::core::{ConsumerId, GroupConfig, GroupId, OrderingValue};
+/// use diavasi::store::{DurableGroup, RedbStore, StateStore};
+///
+/// let dir = tempfile::tempdir()?;
+/// let store = Arc::new(RedbStore::create(dir.path().join("meta.redb"))?);
+/// let config = GroupConfig {
+///     group_id: GroupId::new("orders")?,
+///     total_records: 4,
+///     payload_size: 8,
+///     max_buffer_records: 4,
+///     max_buffer_bytes: 1024,
+///     batch_max_records: 2,
+///     batch_timeout: Duration::from_secs(30),
+/// };
+/// let mut group = DurableGroup::create(Arc::clone(&store), config, "synthetic-u64")?;
+/// group.start()?;
+/// let worker = ConsumerId::new("w")?;
+/// group.join_consumer(worker.clone())?;
+/// group.poll_fetch()?;
+/// let batch = group.assign_batch(&worker)?;
+/// group.ack(batch.id)?; // durable when this returns
+/// let stored = store.load_checkpoint(&GroupId::new("orders")?)?;
+/// assert_eq!(stored, Some(OrderingValue::single_u64(2)));
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub struct DurableGroup<S: StateStore> {
     engine: GroupEngine,
     store: Arc<S>,
@@ -88,55 +117,68 @@ impl<S: StateStore> DurableGroup<S> {
         })
     }
 
+    /// The same group with `hook` installed. See [`CrashHook`].
     pub fn with_crash_hook(mut self, hook: CrashHook) -> Self {
         self.crash = hook;
         self
     }
 
+    /// Install `hook`. See [`CrashHook`].
     pub fn set_crash_hook(&mut self, hook: CrashHook) {
         self.crash = hook;
     }
 
+    /// The engine.
     pub fn engine(&self) -> &GroupEngine {
         &self.engine
     }
 
+    /// The engine, for changes that are not persisted by themselves.
     pub fn engine_mut(&mut self) -> &mut GroupEngine {
         &mut self.engine
     }
 
+    /// The group id.
     pub fn group_id(&self) -> &GroupId {
         &self.engine.config().group_id
     }
 
+    /// The committed cursor in memory. It can lead the stored one until [`Self::persist_progress`] runs.
     pub fn committed_cursor(&self) -> &LogicalCursor {
         self.engine.committed_cursor()
     }
 
+    /// See [`GroupEngine::start`].
     pub fn start(&mut self) -> CoreResult<()> {
         self.engine.start()
     }
 
+    /// See [`GroupEngine::join_consumer`].
     pub fn join_consumer(&mut self, id: ConsumerId) -> CoreResult<()> {
         self.engine.join_consumer(id)
     }
 
+    /// See [`GroupEngine::leave_consumer`].
     pub fn leave_consumer(&mut self, id: &ConsumerId) -> CoreResult<()> {
         self.engine.leave_consumer(id)
     }
 
+    /// See [`GroupEngine::drain`].
     pub fn drain(&mut self) -> CoreResult<()> {
         self.engine.drain()
     }
 
+    /// See [`GroupEngine::list_consumers`].
     pub fn list_consumers(&self) -> Vec<ConsumerId> {
         self.engine.list_consumers()
     }
 
+    /// See [`GroupEngine::poll_fetch`].
     pub fn poll_fetch(&mut self) -> CoreResult<usize> {
         self.engine.poll_fetch()
     }
 
+    /// See [`GroupEngine::assign_batch`]. Calls the crash hook at [`CrashPoint::AfterDeliver`].
     pub fn assign_batch(&mut self, consumer_id: &ConsumerId) -> StoreResult<Batch> {
         let batch = self.engine.assign_batch(consumer_id)?;
         check_crash(&self.crash, CrashPoint::AfterDeliver)?;
@@ -206,6 +248,7 @@ impl<S: StateStore> DurableGroup<S> {
         }
     }
 
+    /// See [`GroupEngine::tick`].
     pub fn tick(&mut self, now: Instant) -> CoreResult<usize> {
         self.engine.tick(now)
     }

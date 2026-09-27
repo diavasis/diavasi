@@ -1,6 +1,42 @@
-//! MongoDB find keyset source.
+//! MongoDB source for Diavasi. A group reads one collection with `find` in a
+//! declared sort; each read resumes after the committed cursor. ADR 0009 and
+//! `docs/adapters/mongodb.md` state the contract.
+//!
+//! Install the factory in the server:
+//!
+//! ```no_run
+//! use std::sync::Arc;
+//! use diavasi::control::{ServeConfig, serve};
+//!
+//! # async fn run(config: ServeConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+//! serve(ServeConfig {
+//!     source_factory: Some(Arc::new(diavasi_adapter_mongodb::MongoFactory)),
+//!     ..config
+//! })
+//! .await
+//! # }
+//! ```
+//!
+//! A connection and a group that reads it:
+//!
+//! ```json
+//! {"id": "mg", "kind": "mongodb",
+//!  "config_json": {"host": "db.internal", "port": 27017, "database": "app", "user": "diavasi"},
+//!  "secret": "s3cret"}
+//! ```
+//!
+//! ```json
+//! {"collection": "orders",
+//!  "order_by": [{"field": "created", "type": "date", "direction": "asc"},
+//!               {"field": "_id", "type": "objectId", "direction": "asc"}],
+//!  "fields": ["customer", "total"],
+//!  "filter": {"status": {"$ne": "draft"}}}
+//! ```
+#![deny(missing_docs)]
+#![deny(rustdoc::broken_intra_doc_links)]
 
 mod catalog;
+/// Connecting to MongoDB, from a stored connection or a URL.
 pub mod connect;
 mod reader;
 mod spec;
@@ -12,6 +48,7 @@ use futures::future::BoxFuture;
 
 use reader::MongoSource;
 
+/// The connection `kind` this adapter reads: `mongodb`.
 pub const NAME: &str = "mongodb";
 
 /// Opens one MongoDB client per running group.

@@ -13,15 +13,44 @@ use super::auth::BearerTokenAuth;
 use super::routes::{AppState, router};
 use super::service::ControlService;
 
+/// Settings for [`serve`] and [`serve_until`].
+///
+/// ```no_run
+/// use diavasi::control::{ServeConfig, serve};
+/// use diavasi::store::StoreKey;
+///
+/// # async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+/// serve(ServeConfig {
+///     bind: "127.0.0.1:7700".parse()?,
+///     data_bind: "127.0.0.1:7710".parse()?,
+///     store_path: "/var/lib/diavasi/meta.redb".into(),
+///     api_token: std::env::var("DIAVASI_API_TOKEN")?,
+///     store_key: Some(StoreKey::from_hex(&std::env::var("DIAVASI_STORE_KEY")?)?),
+///     tls_cert: None,
+///     tls_key: None,
+///     source_factory: None, // synthetic groups only
+///     checkpoint_interval: std::time::Duration::ZERO,
+/// })
+/// .await
+/// # }
+/// ```
 #[derive(Clone)]
 pub struct ServeConfig {
+    /// Control-plane HTTP address.
     pub bind: SocketAddr,
+    /// Data-plane gRPC address.
     pub data_bind: SocketAddr,
+    /// The redb store file. Created, with its directory, when missing.
     pub store_path: PathBuf,
+    /// Bearer token for `/v1`, `/metrics`, and the data plane.
     pub api_token: String,
+    /// Key for connection secrets. `None` reads `DIAVASI_STORE_KEY`; without either, a temporary key is used and connections cannot be created.
     pub store_key: Option<StoreKey>,
+    /// Data-plane certificate. Set with `tls_key` or not at all; when both are unset, a local CA and certificate are generated next to the store.
     pub tls_cert: Option<PathBuf>,
+    /// Private key for `tls_cert`.
     pub tls_key: Option<PathBuf>,
+    /// Opens adapter sources. `None` allows only synthetic groups.
     pub source_factory: Option<Arc<dyn crate::runtime::SourceFactory>>,
     /// Zero writes each ack's checkpoint before answering it. A positive
     /// interval writes at most once per interval; see
@@ -29,6 +58,7 @@ pub struct ServeConfig {
     pub checkpoint_interval: Duration,
 }
 
+/// Environment variable the CLI reads the bearer token from.
 pub const API_TOKEN_ENV: &str = "DIAVASI_API_TOKEN";
 
 /// Pick the store key: `configured`, else `DIAVASI_STORE_KEY`, else a

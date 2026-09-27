@@ -16,7 +16,9 @@ use super::error::{RuntimeError, RuntimeResult};
 use super::handle::GroupHandle;
 
 pub const DEFAULT_COMMAND_CAPACITY: usize = 64;
+/// Default [`GroupRuntimeConfig::fetch_interval`].
 pub const DEFAULT_FETCH_INTERVAL: Duration = Duration::from_millis(5);
+/// Default [`GroupRuntimeConfig::idle_fetch_max`].
 pub const DEFAULT_IDLE_FETCH_MAX: Duration = Duration::from_secs(1);
 pub const DEFAULT_TICK_INTERVAL: Duration = Duration::from_millis(25);
 

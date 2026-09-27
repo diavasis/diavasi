@@ -7,18 +7,28 @@ use mongodb::options::{ClientOptions, Credential, Tls, TlsOptions};
 /// How to reach one database. The sealed secret is the password when `user` is set.
 #[derive(Clone, Debug)]
 pub struct MongoEndpoint {
+    /// Server host.
     pub host: String,
+    /// Server port. Default 27017.
     pub port: u16,
+    /// Database that holds the collection.
     pub database: String,
+    /// User to authenticate as. `None` connects without credentials.
     pub user: Option<String>,
+    /// Password, when `user` is set.
     pub password: Option<String>,
+    /// Database that holds the user. Default `admin`.
     pub auth_source: String,
+    /// Connect with TLS.
     pub tls: bool,
+    /// Name the server shows for this client.
     pub app_name: String,
+    /// How long to wait for the server.
     pub server_selection_timeout: Duration,
 }
 
 impl MongoEndpoint {
+    /// The endpoint of a stored connection. Unknown `config_json` keys are an error.
     pub fn from_request(request: &SourceOpen) -> Result<Self, String> {
         let cfg = &request.connection.config_json;
         diavasi::runtime::check_keys(
@@ -77,6 +87,15 @@ impl MongoEndpoint {
         })
     }
 
+    /// The endpoint of a `mongodb://` URL with one host.
+    ///
+    /// ```
+    /// use diavasi_adapter_mongodb::connect::MongoEndpoint;
+    /// let endpoint = MongoEndpoint::from_url("mongodb://app:s3cret@db.internal:27018/shop?tls=true")?;
+    /// assert_eq!((endpoint.port, endpoint.database.as_str()), (27018, "shop"));
+    /// assert!(endpoint.tls);
+    /// # Ok::<(), String>(())
+    /// ```
     pub fn from_url(url: &str) -> Result<Self, String> {
         let rest = url
             .strip_prefix("mongodb://")
@@ -141,6 +160,7 @@ impl MongoEndpoint {
         })
     }
 
+    /// The `config_json` of a connection to this endpoint, without the password.
     pub fn config_json(&self) -> serde_json::Value {
         let mut json = serde_json::json!({
             "host": self.host,
@@ -155,6 +175,7 @@ impl MongoEndpoint {
         json
     }
 
+    /// The password, or an empty string.
     pub fn secret(&self) -> String {
         self.password.clone().unwrap_or_default()
     }
@@ -207,6 +228,7 @@ fn percent_decode(raw: &str) -> Result<String, String> {
     String::from_utf8(out).map_err(|_| "percent-decoded text is not utf-8".into())
 }
 
+/// A client for the endpoint. The driver connects on first use.
 pub async fn connect(endpoint: &MongoEndpoint) -> Result<Client, String> {
     let uri = format!("mongodb://{}:{}", endpoint.host, endpoint.port);
     let mut options = ClientOptions::parse(uri)

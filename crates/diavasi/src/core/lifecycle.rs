@@ -12,15 +12,31 @@ use super::error::{CoreError, CoreResult};
 /// [`GroupEngine::recover_from`](super::GroupEngine::recover_from).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum GroupLifecycle {
+    /// Not running. The initial state, and the state after a pause or a finished drain.
     Stopped,
+    /// Inside [`GroupEngine::start`](super::GroupEngine::start); never observed outside it.
     Starting,
+    /// Fetching, delivering, and accepting acks and new consumers.
     Running,
+    /// Delivering what is already fetched. Reads nothing new and accepts no new consumers.
     Draining,
+    /// Stopped by an error that a restart would repeat.
     Failed,
+    /// Inside [`GroupEngine::recover_from`](super::GroupEngine::recover_from). The API also reports it for a group waiting to restart after a failure.
     Recovering,
 }
 
 impl GroupLifecycle {
+    /// The new state, or [`CoreError::InvalidTransition`] when the move is not
+    /// allowed.
+    ///
+    /// ```
+    /// use diavasi::core::GroupLifecycle;
+    /// let draining = GroupLifecycle::Running.transition_to(GroupLifecycle::Draining)?;
+    /// assert_eq!(draining, GroupLifecycle::Draining);
+    /// assert!(GroupLifecycle::Stopped.transition_to(GroupLifecycle::Draining).is_err());
+    /// # Ok::<(), diavasi::core::CoreError>(())
+    /// ```
     pub fn transition_to(self, to: Self) -> CoreResult<Self> {
         let ok = matches!(
             (self, to),
@@ -43,6 +59,7 @@ impl GroupLifecycle {
         }
     }
 
+    /// True in `Running` and `Draining`, the states that assign batches and accept acks.
     pub fn allows_dispatch(self) -> bool {
         matches!(self, Self::Running | Self::Draining)
     }

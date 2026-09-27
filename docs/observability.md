@@ -15,7 +15,7 @@ Stage 12 makes a running server explainable. The control plane already had liven
 
 ## Metrics
 
-Names use a `diavasi_` prefix. Counters move when the event happens. Gauges are filled when `/metrics` is scraped, from groups whose runtime is up. A paused group disappears from the gauge series. Its counters stay until the process exits.
+Names use a `diavasi_` prefix. Counters move when the event happens. Gauges are filled when `/metrics` is scraped, from groups whose runtime is up. A paused group disappears from the gauge series. Its counters stay until the process exits or the group is deleted.
 
 Labels `group_id` and `adapter` are on the record counters. `adapter` is `synthetic` when the group has no connection, otherwise the connection kind (`postgres`, `mongodb`, `redis`, `scylla`). No metric carries a consumer id; clients choose those, so they appear in logs instead. Deleting a group removes its series.
 

@@ -8,6 +8,17 @@ use super::ordering::{LogicalCursor, OrderingValue};
 /// out of order; `committed` advances only while the front key is complete.
 /// A completion counts only for a key that is open, that is, delivered and
 /// not yet committed.
+///
+/// ```
+/// use diavasi::core::{ContiguousCommitTracker, OrderingValue};
+/// let k = OrderingValue::single_u64;
+/// let mut tracker = ContiguousCommitTracker::new();
+/// tracker.note_delivered([k(1), k(2), k(3)]);
+/// tracker.complete([k(2), k(3)]);
+/// assert_eq!(tracker.committed(), &None, "1 is still open");
+/// tracker.complete([k(1)]);
+/// assert_eq!(tracker.committed(), &Some(k(3)));
+/// ```
 #[derive(Debug, Default)]
 pub struct ContiguousCommitTracker {
     committed: LogicalCursor,
@@ -21,14 +32,17 @@ pub struct ContiguousCommitTracker {
 }
 
 impl ContiguousCommitTracker {
+    /// A tracker with no committed position.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// The last position with every earlier delivered record acked.
     pub fn committed(&self) -> &LogicalCursor {
         &self.committed
     }
 
+    /// Delivered positions after the committed cursor.
     pub fn open_len(&self) -> usize {
         self.open_order.len()
     }
@@ -75,6 +89,7 @@ impl ContiguousCommitTracker {
         }
     }
 
+    /// Start over from a stored committed cursor, forgetting open positions.
     pub fn reset_from_committed(&mut self, committed: LogicalCursor) {
         self.committed = committed;
         self.open_order.clear();

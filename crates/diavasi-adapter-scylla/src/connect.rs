@@ -9,18 +9,27 @@ use scylla::client::session::Session;
 use scylla::client::session_builder::SessionBuilder;
 use scylla::statement::batch::{Batch, BatchType};
 
+/// How to reach one cluster. The sealed secret is the password when a user is set.
 #[derive(Clone, Debug)]
 pub struct ScyllaEndpoint {
+    /// A contact host.
     pub host: String,
+    /// CQL port. Default 9042.
     pub port: u16,
+    /// Default keyspace for specs that name none.
     pub keyspace: Option<String>,
+    /// User to authenticate as (`user` in `config_json`). `None` does not authenticate.
     pub username: Option<String>,
+    /// Password, when a user is set.
     pub password: Option<String>,
+    /// Connect with TLS.
     pub tls: bool,
+    /// How long to wait to connect.
     pub connect_timeout: Duration,
 }
 
 impl ScyllaEndpoint {
+    /// The endpoint of a stored connection. Unknown `config_json` keys are an error.
     pub fn from_request(request: &SourceOpen) -> Result<Self, String> {
         let cfg = &request.connection.config_json;
         diavasi::runtime::check_keys(
@@ -80,6 +89,14 @@ impl ScyllaEndpoint {
         })
     }
 
+    /// The endpoint of `host:port`, as `SCYLLA_URL` holds it.
+    ///
+    /// ```
+    /// use diavasi_adapter_scylla::connect::ScyllaEndpoint;
+    /// let endpoint = ScyllaEndpoint::from_url("127.0.0.1:9042")?;
+    /// assert_eq!(endpoint.port, 9042);
+    /// # Ok::<(), String>(())
+    /// ```
     pub fn from_url(url: &str) -> Result<Self, String> {
         let raw = url.strip_prefix("scylla://").unwrap_or(url);
         let (hostport, keyspace) = match raw.split_once('/') {
@@ -100,6 +117,7 @@ impl ScyllaEndpoint {
         })
     }
 
+    /// The `config_json` of a connection to this endpoint, without the password.
     pub fn config_json(&self) -> serde_json::Value {
         let mut cfg = serde_json::json!({
             "host": self.host,
@@ -115,6 +133,7 @@ impl ScyllaEndpoint {
         cfg
     }
 
+    /// The password, or an empty string.
     pub fn secret(&self) -> String {
         self.password.clone().unwrap_or_default()
     }
@@ -133,6 +152,7 @@ fn split_host_port(hostport: &str) -> Result<(String, u16), String> {
     Ok((host.to_string(), port))
 }
 
+/// A session. Returns after the control connection is up.
 pub async fn connect(endpoint: &ScyllaEndpoint) -> Result<Session, String> {
     let mut builder = SessionBuilder::new()
         .known_node(format!("{}:{}", endpoint.host, endpoint.port))
@@ -152,6 +172,7 @@ pub async fn connect(endpoint: &ScyllaEndpoint) -> Result<Session, String> {
     builder.build().await.map_err(|err| err.to_string())
 }
 
+/// Run one CQL statement without parameters, such as DDL.
 pub async fn execute(session: &Session, cql: &str) -> Result<(), String> {
     session
         .query_unpaged(cql, ())

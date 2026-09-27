@@ -25,16 +25,25 @@ use super::pb::{Record, RecordBatch};
 use super::session::{Effect, Session};
 use super::{Envelope, error_envelope, record_batch};
 
+/// Settings for [`serve_dataplane`].
 pub struct DataPlaneConfig {
+    /// Address to listen on.
     pub bind: SocketAddr,
+    /// PEM certificate chain the server presents.
     pub tls_cert_pem: Vec<u8>,
+    /// PEM private key of the certificate.
     pub tls_key_pem: Vec<u8>,
+    /// Bearer token clients must send.
     pub api_token: String,
+    /// The supervisor that owns the groups consumers join.
     pub supervisor: Arc<Mutex<GroupSupervisor<RedbStore>>>,
+    /// How often the server sends a heartbeat on an active stream.
     pub heartbeat_interval: Duration,
+    /// A stream that sends nothing for this long is closed with error 8.
     pub heartbeat_timeout: Duration,
 }
 
+/// Serve `DataPlane.Consume` over TLS until the task is aborted or the listener fails.
 pub async fn serve_dataplane(
     config: DataPlaneConfig,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

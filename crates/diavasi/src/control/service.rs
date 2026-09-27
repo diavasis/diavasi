@@ -34,6 +34,7 @@ pub struct ControlService {
 }
 
 impl ControlService {
+    /// A service over `store`, sealing secrets with `key`. `bind` is reported by `status`.
     pub fn new(store: Arc<RedbStore>, key: StoreKey, bind: impl Into<String>) -> Self {
         let supervisor = GroupSupervisor::new(Arc::clone(&store));
         Self {
@@ -51,10 +52,12 @@ impl ControlService {
         self
     }
 
+    /// The supervisor, shared with the data plane.
     pub fn supervisor(&self) -> Arc<Mutex<GroupSupervisor<RedbStore>>> {
         Arc::clone(&self.supervisor)
     }
 
+    /// The store.
     pub fn store(&self) -> &Arc<RedbStore> {
         &self.store
     }
@@ -64,6 +67,7 @@ impl ControlService {
         self.supervisor.lock().await.set_runtime_config(config);
     }
 
+    /// Install the factory that opens adapter sources.
     pub async fn install_source_factory(&self, factory: Arc<dyn SourceFactory>) {
         self.supervisor
             .lock()
@@ -122,11 +126,13 @@ impl ControlService {
         self.supervisor.lock().await.shutdown_all().await;
     }
 
+    /// `GET /ready`: succeeds when the store can be read.
     pub fn ready(&self) -> ControlResult<()> {
         self.store.list_groups()?;
         Ok(())
     }
 
+    /// `GET /metrics`: Prometheus text with live gauges.
     pub async fn encode_metrics(&self) -> String {
         let (observe, handles) = {
             let sup = self.supervisor.lock().await;
@@ -156,6 +162,7 @@ impl ControlService {
         observe.render(handles.len(), &samples)
     }
 
+    /// `GET /v1/status`.
     pub async fn status(&self) -> StatusView {
         let running = {
             let mut sup = self.supervisor.lock().await;
@@ -173,6 +180,7 @@ impl ControlService {
         }
     }
 
+    /// `POST /v1/connections`. Seals the secret; 409 when the id exists or the store key is temporary.
     pub fn create_connection(&self, req: ConnectionCreateRequest) -> ControlResult<ConnectionView> {
         validate_connection_create(&req)?;
         if self.ephemeral_key {
@@ -197,6 +205,7 @@ impl ControlService {
         Ok(connection_view(&record))
     }
 
+    /// `GET /v1/connections`. Secrets are never returned.
     pub fn list_connections(&self) -> ControlResult<Vec<ConnectionView>> {
         Ok(self
             .store
@@ -206,6 +215,7 @@ impl ControlService {
             .collect())
     }
 
+    /// `GET /v1/connections/{id}`.
     pub fn get_connection(&self, id: &str) -> ControlResult<ConnectionView> {
         let rec = self
             .store
@@ -239,6 +249,7 @@ impl ControlService {
         Ok(())
     }
 
+    /// `POST /v1/groups`. Validates the request and, for an adapter group, the source. 409 when the id exists.
     pub async fn create_group(&self, req: GroupCreateRequest) -> ControlResult<GroupView> {
         if req.ordering_contract.len() > 1024 {
             return Err(ControlError::BadRequest(
@@ -301,6 +312,7 @@ impl ControlService {
         self.group_view_from_store(&req.group_id, false)
     }
 
+    /// `GET /v1/groups`.
     pub async fn list_groups(&self) -> ControlResult<Vec<GroupView>> {
         let records = self.store.list_groups()?;
         let mut sup = self.supervisor.lock().await;
@@ -311,6 +323,7 @@ impl ControlService {
             .collect())
     }
 
+    /// `GET /v1/groups/{id}`.
     pub async fn get_group(&self, id: &str) -> ControlResult<GroupView> {
         let gid = GroupId::new(id).map_err(|e| ControlError::BadRequest(e.to_string()))?;
         let rec = self
@@ -336,6 +349,7 @@ impl ControlService {
         Ok(group_view(&rec, presence))
     }
 
+    /// `DELETE /v1/groups/{id}`. 409 while the group runs; removes its metrics.
     pub async fn delete_group(&self, id: &str) -> ControlResult<()> {
         let gid = GroupId::new(id).map_err(|e| ControlError::BadRequest(e.to_string()))?;
         // Hold the supervisor across the check and the delete so a start
@@ -357,6 +371,7 @@ impl ControlService {
         Ok(())
     }
 
+    /// `POST /v1/groups/{id}/start`. Starting a running group is not an error.
     pub async fn start_group(&self, id: &str) -> ControlResult<GroupView> {
         let gid = GroupId::new(id).map_err(|e| ControlError::BadRequest(e.to_string()))?;
         let plan = match self.supervisor.lock().await.plan_start(&gid) {
@@ -372,6 +387,7 @@ impl ControlService {
         self.get_group(id).await
     }
 
+    /// `POST /v1/groups/{id}/pause`. Saves progress and records `Stopped`. Cancels a pending restart.
     pub async fn pause_group(&self, id: &str) -> ControlResult<GroupView> {
         let gid = GroupId::new(id).map_err(|e| ControlError::BadRequest(e.to_string()))?;
         let handle = self.supervisor.lock().await.begin_stop(&gid)?;
@@ -385,10 +401,12 @@ impl ControlService {
         self.get_group(id).await
     }
 
+    /// `POST /v1/groups/{id}/resume`, the same as start.
     pub async fn resume_group(&self, id: &str) -> ControlResult<GroupView> {
         self.start_group(id).await
     }
 
+    /// `POST /v1/groups/{id}/drain`. See [`GroupEngine::drain`](crate::core::GroupEngine::drain).
     pub async fn drain_group(&self, id: &str) -> ControlResult<GroupView> {
         let gid = GroupId::new(id).map_err(|e| ControlError::BadRequest(e.to_string()))?;
         let handle = self
@@ -401,6 +419,7 @@ impl ControlService {
         self.get_group(id).await
     }
 
+    /// `GET /v1/groups/{id}/consumers`. Empty when the group is not running.
     pub async fn list_consumers(&self, id: &str) -> ControlResult<ConsumersView> {
         let gid = GroupId::new(id).map_err(|e| ControlError::BadRequest(e.to_string()))?;
         let handle = self.supervisor.lock().await.get_handle(&gid);
@@ -419,6 +438,7 @@ impl ControlService {
         })
     }
 
+    /// `GET /v1/groups/{id}/diagnostics`.
     pub async fn diagnostics(&self, id: &str) -> ControlResult<DiagnosticsView> {
         let gid = GroupId::new(id).map_err(|e| ControlError::BadRequest(e.to_string()))?;
         let rec = self
@@ -513,6 +533,7 @@ impl ControlService {
         })
     }
 
+    /// `GET /v1/groups/{id}/checkpoint`.
     pub async fn checkpoint(&self, id: &str) -> ControlResult<CheckpointView> {
         let gid = GroupId::new(id).map_err(|e| ControlError::BadRequest(e.to_string()))?;
         if self.store.get_group(&gid)?.is_none() {

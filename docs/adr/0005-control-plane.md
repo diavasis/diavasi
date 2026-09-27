@@ -12,15 +12,15 @@ Secrets on connections must never round-trip in plaintext after create. The engi
 
 ## Decision
 
-- **axum** serves `/v1` on a local bind address. Auth is shared-secret **Bearer** token (`Authorization: Bearer …`) on all routes except `GET /health` and `GET /ready`. Validator trait `AuthValidator` with `BearerTokenAuth` leaves room for later plugins; no RBAC in Stage 4.
-- **`ControlService`** wraps `Arc<Mutex<GroupSupervisor<RedbStore>>>` + `Arc<RedbStore>` + `StoreKey`. A background task polls `supervise_once`.
-- **Lifecycle verb mapping:**
+- axum serves `/v1` on a local bind address. Every route except `GET /health` and `GET /ready` needs a shared bearer token (`Authorization: Bearer <token>`). The router checks it through the `AuthValidator` trait; `BearerTokenAuth` is the built-in implementation, and another implementation can be passed in `AppState`. There is no role-based access control.
+- `ControlService` holds the store, the store key, and the supervisor. A background task calls `supervise_once` every 100 ms. No lock is held while a source opens or a group answers.
+- Lifecycle verbs:
   - `start` / `resume` → `GroupSupervisor::start_group`
   - `pause` → graceful `stop_group`: the group records `Stopped`, snapshots, and exits; the definition remains.
   - `drain` → `GroupHandle::drain` (Running → Draining). A draining group reads nothing new and accepts no new consumers. Records already fetched are still delivered and acked. When the buffer and the in-flight set are empty, the group records `Stopped` and its task exits with stop reason `drained`. Draining a group that is not running, or twice, is 409.
   - `delete` → fail if running; else `StateStore::delete_group`
-- Connection create seals secrets with Stage 2 crypto; **list/show never return plaintext**.
-- **`diavasi` CLI** is an HTTP client for admin commands; `diavasi serve` calls `diavasi::control::serve`. Output `--output text|json`.
+- Connection create seals the secret with the store key. List and show never return it.
+- The `diavasi` CLI is an HTTP client for the admin commands, with `--output text` or `--output json`. `diavasi serve` calls `diavasi::control::serve`.
 
 ## Consequences
 

@@ -21,11 +21,17 @@ use super::{Envelope, PROTOCOL_VERSION, ack, flow_control, hello, join_group, le
 /// paths in tests: `stop_after_batches`, `idle_after_join`,
 /// `leave_after_join`, and `duplicate_first_ack`.
 pub struct ConsumerOptions {
+    /// Data-plane address, `host:port`.
     pub addr: String,
+    /// PEM CA that signed the server certificate. The server name checked is `localhost`.
     pub ca_pem: Vec<u8>,
+    /// Bearer token.
     pub token: String,
+    /// The group to join.
     pub group_id: String,
+    /// The consumer id to join as.
     pub consumer_id: String,
+    /// Unacked batches to allow, sent as `FlowControl`.
     pub max_in_flight: u32,
     /// Stop after this many batches without acking or leaving (abrupt disconnect).
     pub stop_after_batches: Option<usize>,
@@ -43,20 +49,27 @@ pub struct ConsumerOptions {
     pub ack_delay: Duration,
     /// When set, every client sharing this counter leaves once `target` records are acked.
     pub shared_progress: Option<SharedProgress>,
+    /// Give up after this long.
     pub timeout: Duration,
 }
 
 /// Ack counter shared by consumers of one group.
 #[derive(Clone)]
 pub struct SharedProgress {
+    /// Records acked by every consumer sharing it.
     pub acked: Arc<AtomicU64>,
+    /// Stop once `acked` reaches this.
     pub target: u64,
 }
 
+/// What one [`ConsumerClient::run`] received.
 #[derive(Debug)]
 pub struct ConsumeReport {
+    /// `record_id` of every record received, in order, including repeats.
     pub record_ids: Vec<u64>,
+    /// Batches received.
     pub batches: usize,
+    /// Batches acked.
     pub acked: usize,
     /// Time from batch receipt through the optional ack delay until the ack is queued.
     pub ack_latency_us: Vec<u64>,
@@ -67,6 +80,7 @@ pub struct ConsumeReport {
 pub struct ConsumerClient;
 
 impl ConsumerClient {
+    /// Connect, join, and consume until `expect_records`, `shared_progress`, or a test switch ends the stream, or `timeout` passes.
     pub async fn run(
         opts: ConsumerOptions,
     ) -> Result<ConsumeReport, Box<dyn std::error::Error + Send + Sync>> {

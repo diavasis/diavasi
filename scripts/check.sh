@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Format, lint, test, license check, and coverage.
+# Format, lint, docs, test, license check, and coverage.
 # Uses DATABASE_URL, MONGODB_URL, REDIS_URL, and SCYLLA_URL when set.
 # Otherwise the Compose Postgres on port 5433, MongoDB on port 27017, Redis
 # on port 6379, and ScyllaDB on port 9042, so the adapter tests run and show
@@ -38,6 +38,10 @@ cargo fmt --check
 
 echo "==> clippy"
 cargo clippy --all-targets --all-features -- -D warnings
+
+echo "==> docs"
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features --workspace \
+  --exclude diavasi-cli --exclude diavasi-bench
 
 echo "==> test"
 cargo test --all --all-features

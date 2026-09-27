@@ -17,6 +17,7 @@ pub struct RedbStore {
 }
 
 impl RedbStore {
+    /// Create a store file at `path`, replacing none: fails when it cannot be created.
     pub fn create(path: impl AsRef<Path>) -> StoreResult<Self> {
         let db = Database::create(path.as_ref())?;
         let store = Self { db: Arc::new(db) };
@@ -24,6 +25,7 @@ impl RedbStore {
         Ok(store)
     }
 
+    /// Open an existing store file. Fails on a schema version this build does not support.
     pub fn open(path: impl AsRef<Path>) -> StoreResult<Self> {
         let db = Database::open(path.as_ref())?;
         let store = Self { db: Arc::new(db) };

@@ -3,26 +3,45 @@ use bytes::Bytes;
 use super::ids::{BatchId, ConsumerId};
 use super::ordering::OrderingValue;
 
+/// One record read from a source: its position in the stream and its bytes.
+///
+/// ```
+/// use bytes::Bytes;
+/// use diavasi::core::{OrderingValue, Record};
+/// let record = Record {
+///     ordering: OrderingValue::single_u64(7),
+///     payload: Bytes::from_static(br#"{"id":7}"#),
+/// };
+/// assert_eq!(record.byte_len(), 8);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Record {
+    /// Position in the group's total order. Strictly increasing along the stream.
     pub ordering: OrderingValue,
+    /// The record as the consumer receives it, usually a JSON object.
     pub payload: Bytes,
 }
 
 impl Record {
+    /// Payload length in bytes. Buffer and batch caps count this.
     pub fn byte_len(&self) -> usize {
         self.payload.len()
     }
 }
 
+/// Records handed to one consumer. The consumer acks the whole batch by `id`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Batch {
+    /// Batch id, unique within the group and increasing.
     pub id: BatchId,
+    /// The consumer the batch was assigned to.
     pub consumer_id: ConsumerId,
+    /// Records in stream order.
     pub records: Vec<Record>,
 }
 
 impl Batch {
+    /// The ordering of each record, in order.
     pub fn orderings(&self) -> impl Iterator<Item = &OrderingValue> {
         self.records.iter().map(|r| &r.ordering)
     }

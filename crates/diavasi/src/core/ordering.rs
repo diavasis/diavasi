@@ -6,8 +6,11 @@ use super::error::{CoreError, CoreResult};
 /// One component of a total ordering tuple.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum OrderingAtom {
+    /// A signed integer, timestamp, or complemented descending value.
     I64(i64),
+    /// An unsigned integer, such as a synthetic id or a Redis stream id part.
     U64(u64),
+    /// Bytes compared lexicographically: text in byte order, a binary key, or an encoded descending value.
     Bytes(Vec<u8>),
 }
 
@@ -32,11 +35,26 @@ impl Ord for OrderingAtom {
     }
 }
 
-/// Total ordering tuple. Empty tuples are rejected.
+/// A record's position in the group's total order: a non-empty tuple of
+/// [`OrderingAtom`]s, compared left to right.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct OrderingValue(Vec<OrderingAtom>);
 
 impl OrderingValue {
+    /// A tuple of atoms. Fails when `atoms` is empty.
+    ///
+    /// Atoms of different kinds compare `I64 < U64 < Bytes`. A cursor
+    /// serializes as a JSON array of tagged atoms, for example
+    /// `[{"I64": 1700000000123456}, {"I64": 42}]`.
+    ///
+    /// ```
+    /// use diavasi::core::{OrderingAtom, OrderingValue};
+    /// let a = OrderingValue::new(vec![OrderingAtom::I64(1), OrderingAtom::Bytes(b"b".to_vec())])?;
+    /// let b = OrderingValue::new(vec![OrderingAtom::I64(2)])?;
+    /// assert!(a < b);
+    /// assert_eq!(serde_json::to_string(&b).unwrap(), r#"[{"I64":2}]"#);
+    /// # Ok::<(), diavasi::core::CoreError>(())
+    /// ```
     pub fn new(atoms: Vec<OrderingAtom>) -> CoreResult<Self> {
         if atoms.is_empty() {
             return Err(CoreError::InvalidArgument(
@@ -46,15 +64,17 @@ impl OrderingValue {
         Ok(Self(atoms))
     }
 
+    /// A one-atom `U64` tuple, as synthetic records use.
     pub fn single_u64(v: u64) -> Self {
         Self(vec![OrderingAtom::U64(v)])
     }
 
+    /// The atoms, left to right.
     pub fn atoms(&self) -> &[OrderingAtom] {
         &self.0
     }
 
-    /// Successor for Stage 1 synthetic single-u64 keys.
+    /// For a one-atom `U64` tuple, the next value. `None` for other shapes or at `u64::MAX`.
     pub fn succ_u64(&self) -> Option<Self> {
         match self.0.as_slice() {
             [OrderingAtom::U64(v)] => Some(Self::single_u64(v.checked_add(1)?)),

@@ -8,6 +8,7 @@ use diavasi::runtime::SourceOpen;
 /// How to reach one database. The sealed secret is the password.
 #[derive(Clone)]
 pub struct PgEndpoint {
+    /// Host, port, database, user, and password.
     pub config: Config,
     /// Connect with TLS and verify the server certificate.
     pub tls: bool,
@@ -17,6 +18,7 @@ pub struct PgEndpoint {
 }
 
 impl PgEndpoint {
+    /// The endpoint of a stored connection: `config_json` plus the opened secret as password. Unknown `config_json` keys are an error.
     pub fn from_request(request: &SourceOpen) -> Result<Self, String> {
         let cfg = &request.connection.config_json;
         diavasi::runtime::check_keys(
@@ -73,6 +75,18 @@ impl PgEndpoint {
         })
     }
 
+    /// The endpoint and password of a `postgres://` URL. The URL must carry a
+    /// password; `sslmode=require` turns on TLS.
+    ///
+    /// ```
+    /// use diavasi_adapter_postgres::connect::PgEndpoint;
+    /// let (endpoint, password) =
+    ///     PgEndpoint::from_database_url("postgres://app:s3cret@db.internal:5432/app?sslmode=require")?;
+    /// assert!(endpoint.tls);
+    /// assert_eq!(password, "s3cret");
+    /// assert_eq!(endpoint.config_json()["dbname"], "app");
+    /// # Ok::<(), String>(())
+    /// ```
     pub fn from_database_url(url: &str) -> Result<(Self, String), String> {
         let config: Config = url.parse().map_err(|err| format!("DATABASE_URL: {err}"))?;
         let password = config
@@ -94,6 +108,7 @@ impl PgEndpoint {
         ))
     }
 
+    /// The `config_json` of a connection to this endpoint, without the password.
     pub fn config_json(&self) -> serde_json::Value {
         let host = match self.config.get_hosts().first() {
             Some(tokio_postgres::config::Host::Tcp(host)) => host.clone(),
@@ -121,6 +136,7 @@ pub(crate) fn error_chain(err: &tokio_postgres::Error) -> String {
     message
 }
 
+/// Open a connection. With TLS, the server certificate is verified against `ca_pem` or the public roots.
 pub async fn connect(endpoint: &PgEndpoint) -> Result<Client, String> {
     if endpoint.tls {
         let _ = rustls::crypto::ring::default_provider().install_default();

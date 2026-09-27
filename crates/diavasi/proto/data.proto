@@ -2,74 +2,123 @@ syntax = "proto3";
 
 package diavasi.data.v1;
 
-// Production data plane. Distinct from the Stage 0 bench package.
+// The data plane: one bidirectional stream per consumer. ADR 0007 describes
+// the session; the numbered error codes are in `ErrorMessage`.
 service DataPlane {
+  // Hello, JoinGroup, then batches from the server and acks from the client
+  // until either side leaves. Needs `authorization: Bearer <token>`.
   rpc Consume(stream Envelope) returns (stream Envelope);
 }
 
+// Every frame, in both directions.
 message Envelope {
+  // Envelope format version. Always 1.
   uint32 version = 1;
+  // The frame.
   oneof body {
+    // Client, first frame: the protocol version it speaks.
     Hello hello = 2;
+    // Server: the version accepted.
     HelloAck hello_ack = 3;
+    // Client, after HelloAck: join a running group as a consumer.
     JoinGroup join_group = 4;
+    // Server: the join succeeded.
     Joined joined = 5;
+    // Server: records to process and then ack.
     RecordBatch record_batch = 6;
+    // Client: the batch is processed.
     Ack ack = 7;
     // Reserved. Clients must not send this; the server rejects it.
     Nack nack = 8;
+    // Both: keeps an idle stream alive. The client answers the server's.
     Heartbeat heartbeat = 9;
+    // Client, once after Joined: how many batches may be unacked at once.
     FlowControl flow_control = 10;
+    // Server: a protocol error. The stream then closes.
     ErrorMessage error = 11;
+    // Client: leave the group. Unacked batches return for redelivery.
     Leave leave = 12;
   }
 }
 
+// Client, first frame.
 message Hello {
+  // The protocol version the client speaks. Only 1 exists.
   uint32 protocol_version = 1;
 }
 
+// Server, answer to Hello.
 message HelloAck {
+  // The protocol version the server accepted.
   uint32 protocol_version = 1;
 }
 
+// Client: join a group.
 message JoinGroup {
+  // The group to read. It must be running.
   string group_id = 1;
+  // This consumer's id. A second stream with the same id takes the first
+  // one over; the first receives error 2.
   string consumer_id = 2;
 }
 
+// Server: the join succeeded.
 message Joined {
+  // The group joined.
   string group_id = 1;
+  // The consumer id joined.
   string consumer_id = 2;
 }
 
+// One record in a batch.
 message Record {
+  // The record's integer key when it has a single non-negative integer
+  // ordering, otherwise 0 (Redis, compound keys, token scans). Do not
+  // deduplicate on it; the server's cursor is the identity.
   uint64 record_id = 1;
+  // The record, usually a JSON object.
   bytes payload = 2;
 }
 
+// Server: records for this consumer.
 message RecordBatch {
+  // The id to ack.
   uint64 batch_id = 1;
+  // Records in stream order. At most the group's batch_max_records, and at
+  // most 4 MiB less 64 KiB of payload unless one record alone is larger.
   repeated Record records = 2;
 }
 
+// Client: a batch is processed.
 message Ack {
+  // The batch processed.
   uint64 batch_id = 1;
 }
 
+// Reserved for a future negative acknowledgement.
 message Nack {
+  // The batch refused.
   uint64 batch_id = 1;
 }
 
+// Keeps the stream alive. The server sends one every 5 seconds and closes a
+// stream that sends nothing for 30 seconds.
 message Heartbeat {}
 
+// Client: how many batches may be unacked on this stream.
 message FlowControl {
+  // 1 to 1024. The default is 1.
   uint32 max_in_flight = 1;
 }
 
+// Server: a protocol error.
 message ErrorMessage {
+  // 1 bad version, 2 bad state, 3 unknown ack, 4 duplicate ack, 5 group not
+  // running, 6 unsupported, 7 internal, 8 heartbeat timeout.
   uint32 code = 1;
+  // A description for people.
   string message = 2;
 }
 
+// Client: leave the group.
 message Leave {}

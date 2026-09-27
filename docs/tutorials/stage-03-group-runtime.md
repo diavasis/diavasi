@@ -8,9 +8,9 @@ Related code: `crates/diavasi/src/runtime/`. Decision record: [ADR 0004](../adr/
 
 Stage 3 wraps Stage 2 `DurableGroup` in a supervised async runtime:
 
-- `GroupSupervisor` — starts/stops many groups; recovers unexpected exits
-- `GroupRuntime` — one owner task per group + fetch/timeout children
-- `GroupHandle` — in-process client (join / assign / ack)
+- `GroupSupervisor`: starts and stops groups, and restarts a group that fails.
+- `GroupRuntime`: one owner task per group, with a fetch task and two tickers.
+- `GroupHandle`: the in-process client (join, assign, ack).
 
 Still absent: HTTP/CLI (Stage 4), production gRPC data plane (Stage 5), real DB adapters.
 

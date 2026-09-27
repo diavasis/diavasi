@@ -109,9 +109,9 @@ diavasi --output json connection show demo-pg
 
 ## 5. Auth and health
 
-- `GET /health` — no auth (liveness)
-- `GET /ready` — no auth (store can be read)
-- All `/v1/*` and `/metrics` — `Authorization: Bearer <token>`
+- `GET /health`: no auth. The process is up.
+- `GET /ready`: no auth. The store can be read.
+- Every `/v1/*` route and `/metrics`: `Authorization: Bearer <token>`.
 - Missing/wrong token → HTTP 401
 
 ## 6. What to remember

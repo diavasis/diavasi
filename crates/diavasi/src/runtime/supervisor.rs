@@ -45,7 +45,9 @@ struct Retry {
 /// checkpoint remain in the store.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GroupOutcome {
+    /// `paused`, `drained`, `shutdown`, `stopped`, `task aborted`, `task panicked`, or a source error text.
     pub last_stop_reason: String,
+    /// True after the supervisor restarted the group in this process.
     pub recovered: bool,
 }
 
@@ -82,6 +84,7 @@ pub struct FailedStart {
 }
 
 impl<S: StateStore + 'static> StartPlan<S> {
+    /// The group to open.
     pub fn group_id(&self) -> &GroupId {
         &self.id
     }
@@ -140,6 +143,41 @@ pub struct GroupSupervisor<S: StateStore> {
 }
 
 impl<S: StateStore + 'static> GroupSupervisor<S> {
+    /// A supervisor with no running groups and no source factory, so only
+    /// synthetic groups can start until [`Self::set_source_factory`].
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use std::time::Duration;
+    /// use diavasi::core::{ConsumerId, GroupConfig, GroupId};
+    /// use diavasi::runtime::GroupSupervisor;
+    /// use diavasi::store::{DurableGroup, RedbStore};
+    ///
+    /// # #[tokio::main(flavor = "current_thread")]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let dir = tempfile::tempdir()?;
+    /// let store = Arc::new(RedbStore::create(dir.path().join("meta.redb"))?);
+    /// let config = GroupConfig {
+    ///     group_id: GroupId::new("orders")?,
+    ///     total_records: 4,
+    ///     payload_size: 8,
+    ///     max_buffer_records: 4,
+    ///     max_buffer_bytes: 1024,
+    ///     batch_max_records: 2,
+    ///     batch_timeout: Duration::from_secs(30),
+    /// };
+    /// DurableGroup::create(Arc::clone(&store), config, "synthetic-u64")?;
+    ///
+    /// let mut supervisor = GroupSupervisor::new(store);
+    /// let id = GroupId::new("orders")?;
+    /// let handle = supervisor.start_group(&id).await?;
+    /// let worker = ConsumerId::new("w")?;
+    /// handle.join(worker.clone()).await?;
+    /// let batch = handle.assign_wait(&worker, Duration::from_secs(1)).await?;
+    /// handle.ack(batch.id).await?;
+    /// supervisor.stop_group(&id).await?;
+    /// # Ok(()) }
+    /// ```
     pub fn new(store: Arc<S>) -> Self {
         Self {
             store,
@@ -154,10 +192,12 @@ impl<S: StateStore + 'static> GroupSupervisor<S> {
         }
     }
 
+    /// The metrics registry shared by the supervised groups.
     pub fn observe(&self) -> Observe {
         self.observe.clone()
     }
 
+    /// Why `id` last stopped in this process, if it did.
     pub fn outcome(&self, id: &GroupId) -> Option<GroupOutcome> {
         self.outcomes.get(id.as_str()).cloned()
     }
@@ -171,6 +211,7 @@ impl<S: StateStore + 'static> GroupSupervisor<S> {
         self.groups.values().filter(|g| !g.join.is_finished())
     }
 
+    /// The same supervisor with `config` for groups it starts from now on.
     pub fn with_runtime_config(mut self, config: GroupRuntimeConfig) -> Self {
         self.runtime_config = config;
         self
@@ -181,15 +222,18 @@ impl<S: StateStore + 'static> GroupSupervisor<S> {
         self.runtime_config = config;
     }
 
+    /// Install the factory for adapter groups and the key that opens their secrets.
     pub fn set_source_factory(&mut self, factory: Arc<dyn SourceFactory>, key: StoreKey) {
         self.source_factory = Some(factory);
         self.store_key = Some(key);
     }
 
+    /// The installed factory, if any.
     pub fn source_factory(&self) -> Option<Arc<dyn SourceFactory>> {
         self.source_factory.clone()
     }
 
+    /// Groups whose task is running.
     pub fn list_running(&self) -> Vec<GroupId> {
         self.live().map(|g| g.handle.group_id.clone()).collect()
     }

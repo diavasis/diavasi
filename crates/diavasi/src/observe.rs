@@ -1,4 +1,4 @@
-//! Process-owned Prometheus registry.
+//! Prometheus metrics and log setup.
 //!
 //! Counters move when a fetch, delivery, ack, replay, restart, disconnect, or
 //! adapter error happens. Buffer and in-flight gauges are filled at scrape time
@@ -19,27 +19,52 @@ const LATENCY_BUCKETS: &[f64] = &[
 /// One running group's gauge values, collected when `/metrics` is scraped.
 #[derive(Debug, Clone)]
 pub struct GaugeSample {
+    /// The group.
     pub group_id: String,
+    /// Records in the buffer.
     pub buffer_records: u64,
+    /// Payload bytes in the buffer.
     pub buffer_bytes: u64,
+    /// Records assigned and not yet acked.
     pub inflight_records: u64,
+    /// Buffer plus in-flight records: fetched and not yet committed.
     pub checkpoint_lag: u64,
+    /// Joined consumers.
     pub consumer_count: u64,
 }
 
 /// Counter values for one group, for the diagnostics view.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CounterSnapshot {
+    /// Records read from the source.
     pub records_fetched: u64,
+    /// Records assigned to consumers.
     pub records_delivered: u64,
+    /// Records acked.
     pub records_acked: u64,
+    /// Records returned to the buffer for another delivery.
     pub records_replayed: u64,
+    /// Payload bytes read from the source.
     pub bytes: u64,
+    /// Successful restarts after a failure.
     pub restarts: u64,
+    /// Consumer streams that left or dropped.
     pub consumer_disconnects: u64,
+    /// Source reads that failed.
     pub adapter_errors: u64,
 }
 
+/// The process's metrics registry. Cloning shares it. `docs/observability.md`
+/// lists every metric.
+///
+/// ```
+/// use std::time::Duration;
+/// use diavasi::observe::Observe;
+/// let observe = Observe::new();
+/// observe.record_fetch("orders", "postgres", 200, 12_800, Duration::from_millis(3));
+/// assert_eq!(observe.counters("orders", "postgres").records_fetched, 200);
+/// assert!(observe.render(1, &[]).contains("diavasi_group_records_fetched_total"));
+/// ```
 #[derive(Clone)]
 pub struct Observe {
     inner: Arc<Inner>,
@@ -70,6 +95,7 @@ struct Inner {
 }
 
 impl Observe {
+    /// A registry with every metric registered and no series.
     pub fn new() -> Self {
         let registry = Registry::new();
         let groups_running = gauge("diavasi_groups_running", "Group runtimes currently running");
@@ -215,6 +241,7 @@ impl Observe {
         }
     }
 
+    /// A source read returned `records` records of `bytes` payload bytes in `latency`.
     pub fn record_fetch(
         &self,
         group: &str,
@@ -241,6 +268,7 @@ impl Observe {
             .observe(latency.as_secs_f64());
     }
 
+    /// `records` records were assigned to a consumer.
     pub fn record_deliver(&self, group: &str, adapter: &str, records: u64) {
         if records > 0 {
             self.inner
@@ -250,6 +278,7 @@ impl Observe {
         }
     }
 
+    /// `records` records were acked; applying the ack took `latency`.
     pub fn record_ack(&self, group: &str, adapter: &str, records: u64, latency: Duration) {
         if records > 0 {
             self.inner
@@ -263,6 +292,7 @@ impl Observe {
             .observe(latency.as_secs_f64());
     }
 
+    /// `records` records went back to the buffer for another delivery.
     pub fn record_replay(&self, group: &str, adapter: &str, records: u64) {
         if records > 0 {
             self.inner
@@ -272,6 +302,7 @@ impl Observe {
         }
     }
 
+    /// A checkpoint write took `latency`.
     pub fn record_checkpoint(&self, group: &str, latency: Duration) {
         self.inner
             .checkpoint_latency
@@ -279,10 +310,12 @@ impl Observe {
             .observe(latency.as_secs_f64());
     }
 
+    /// The supervisor restarted the group after a failure.
     pub fn record_restart(&self, group: &str) {
         self.inner.restarts.with_label_values(&[group]).inc();
     }
 
+    /// A restart could not open the source.
     pub fn record_recovery_failure(&self, group: &str) {
         self.inner
             .recovery_failures
@@ -290,6 +323,7 @@ impl Observe {
             .inc();
     }
 
+    /// An ack arrived for a batch no longer in flight.
     pub fn record_stale_ack(&self, group: &str) {
         self.inner.stale_acks.with_label_values(&[group]).inc();
     }
@@ -300,6 +334,7 @@ impl Observe {
         self.inner.disconnects.with_label_values(&[group]).inc();
     }
 
+    /// A source read failed.
     pub fn record_adapter_error(&self, group: &str, adapter: &str) {
         self.inner
             .adapter_errors

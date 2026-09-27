@@ -101,7 +101,7 @@ diavasi serve \
 | `--checkpoint-interval-ms` | `DIAVASI_CHECKPOINT_INTERVAL_MS` | 0 writes each ack's checkpoint before answering it. A larger value writes at most once per interval; a crash can replay up to one interval of acked records. |
 
 
-`GET /health` and `GET /ready` need no token. Every `/v1` route and `GET /metrics` require `Authorization: Bearer <token>`.
+`GET /health` and `GET /ready` need no token. Every `/v1` route and `GET /metrics` require `Authorization: Bearer <token>`. Every route, body, and status code is in [docs/api.md](docs/api.md). Limits, security, restarts, and what to do when a group stops are in [docs/operations.md](docs/operations.md).
 
 ### Running
 
@@ -212,7 +212,7 @@ Language, install, and the Compose profile for each SDK are in [clients/README.m
 | v0.15.0       | Tauri 2 app on the same HTTP API                                                                                | Planned |
 
 
-Stage tutorials and reviews live under `[docs/](docs/)`.
+Stage tutorials and reviews live under [docs/](docs/).
 
 ## Developing Diavasi
 

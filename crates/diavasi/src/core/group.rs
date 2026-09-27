@@ -28,27 +28,70 @@ pub enum AckOutcome {
     Stale,
 }
 
+/// Static configuration of one consumer group. Stored with the group and
+/// serialized as JSON; `batch_timeout` is `{"secs": 30, "nanos": 0}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupConfig {
+    /// Group identity, unique within a store.
     pub group_id: GroupId,
+    /// Synthetic groups only: the source holds records `1..=total_records`.
     pub total_records: u64,
+    /// Synthetic groups only: payload length of each record, in bytes.
     pub payload_size: usize,
+    /// Most records the read-ahead buffer holds. At least 1.
     pub max_buffer_records: usize,
+    /// Most payload bytes the read-ahead buffer holds. At least 1.
     pub max_buffer_bytes: usize,
+    /// Most records in one batch. At least 1 and at most `max_buffer_records`.
     pub batch_max_records: usize,
+    /// A batch not acked within this time returns to the buffer for another delivery. The control plane requires at least 100 ms.
     pub batch_timeout: Duration,
 }
 
-/// Durable-facing snapshot for Stage 1 restart (in-memory stand-in for Stage 2).
+/// What survives a restart: configuration, lifecycle, committed cursor, and
+/// the next batch id. Buffered and in-flight records are not kept; they are
+/// read again from the committed cursor.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GroupSnapshot {
+    /// The group configuration.
     pub config: GroupConfig,
+    /// The lifecycle when the snapshot was taken.
     pub lifecycle: GroupLifecycle,
+    /// Last position with every earlier record acked.
     pub committed_cursor: LogicalCursor,
+    /// The id the next assigned batch gets.
     pub next_batch_id: u64,
 }
 
-/// Synchronous in-memory consumer-group engine.
+/// One consumer group's state and rules, without I/O.
+///
+/// Fetch fills the buffer from the source, `assign_batch` moves records from
+/// the buffer to a consumer, `ack` completes them, and `tick` returns batches
+/// whose consumer took too long. The committed cursor advances across a
+/// contiguous run of acked records.
+///
+/// ```
+/// use std::time::Duration;
+/// use diavasi::core::{ConsumerId, GroupConfig, GroupEngine, GroupId, OrderingValue};
+///
+/// let mut engine = GroupEngine::new(GroupConfig {
+///     group_id: GroupId::new("demo")?,
+///     total_records: 8,
+///     payload_size: 16,
+///     max_buffer_records: 4,
+///     max_buffer_bytes: 4096,
+///     batch_max_records: 2,
+///     batch_timeout: Duration::from_secs(30),
+/// })?;
+/// engine.start()?;
+/// let worker = ConsumerId::new("worker-1")?;
+/// engine.join_consumer(worker.clone())?;
+/// assert_eq!(engine.poll_fetch()?, 4, "fills the buffer to its cap");
+/// let batch = engine.assign_batch(&worker)?;
+/// engine.ack(batch.id)?;
+/// assert_eq!(engine.committed_cursor(), &Some(OrderingValue::single_u64(2)));
+/// # Ok::<(), diavasi::core::CoreError>(())
+/// ```
 #[derive(Debug)]
 pub struct GroupEngine {
     config: GroupConfig,
@@ -63,6 +106,7 @@ pub struct GroupEngine {
 }
 
 impl GroupEngine {
+    /// A stopped group with an empty buffer. Fails when a cap is zero.
     pub fn new(config: GroupConfig) -> CoreResult<Self> {
         if config.batch_max_records == 0 {
             return Err(CoreError::InvalidArgument(
@@ -84,42 +128,52 @@ impl GroupEngine {
         })
     }
 
+    /// The current lifecycle.
     pub fn lifecycle(&self) -> GroupLifecycle {
         self.lifecycle
     }
 
+    /// Last position with every earlier delivered record acked.
     pub fn committed_cursor(&self) -> &LogicalCursor {
         self.commit.committed()
     }
 
+    /// Last position read from the source. At or after the committed cursor.
     pub fn fetched_cursor(&self) -> &LogicalCursor {
         &self.fetched_cursor
     }
 
+    /// Records in the buffer.
     pub fn buffer_len(&self) -> usize {
         self.buffer.len()
     }
 
+    /// Payload bytes in the buffer.
     pub fn buffer_bytes(&self) -> usize {
         self.buffer.bytes()
     }
 
+    /// Records the buffer can still take.
     pub fn buffer_free_records(&self) -> usize {
         self.buffer.remaining_record_slots()
     }
 
+    /// Batches assigned and not yet acked.
     pub fn inflight_len(&self) -> usize {
         self.inflight.len()
     }
 
+    /// Records in batches assigned and not yet acked.
     pub fn inflight_records(&self) -> usize {
         self.inflight.record_count()
     }
 
+    /// The group configuration.
     pub fn config(&self) -> &GroupConfig {
         &self.config
     }
 
+    /// Move a stopped group to `Running`.
     pub fn start(&mut self) -> CoreResult<()> {
         self.lifecycle = self.lifecycle.transition_to(GroupLifecycle::Starting)?;
         self.lifecycle = self.lifecycle.transition_to(GroupLifecycle::Running)?;
@@ -147,10 +201,12 @@ impl GroupEngine {
         Ok(())
     }
 
+    /// The joined consumers, sorted.
     pub fn list_consumers(&self) -> Vec<ConsumerId> {
         self.consumers.ids()
     }
 
+    /// Finish a drain: `Draining` becomes `Stopped`. A stopped group stays stopped.
     pub fn stop(&mut self) -> CoreResult<()> {
         match self.lifecycle {
             GroupLifecycle::Draining => {
@@ -167,11 +223,13 @@ impl GroupEngine {
         Ok(())
     }
 
+    /// Mark the group `Failed`.
     pub fn fail(&mut self) -> CoreResult<()> {
         self.lifecycle = self.lifecycle.transition_to(GroupLifecycle::Failed)?;
         Ok(())
     }
 
+    /// The state to persist. See [`GroupSnapshot`].
     pub fn snapshot(&self) -> GroupSnapshot {
         GroupSnapshot {
             config: self.config.clone(),
@@ -205,6 +263,7 @@ impl GroupEngine {
         self.consumers.join(id)
     }
 
+    /// Remove a consumer and return its batches in flight to the buffer.
     pub fn leave_consumer(&mut self, id: &ConsumerId) -> CoreResult<()> {
         self.ensure_dispatch()?;
         self.consumers.leave(id)?;
@@ -262,6 +321,9 @@ impl GroupEngine {
         Ok(fetched)
     }
 
+    /// Hand the next batch to `consumer_id`: up to `batch_max_records` records
+    /// and at most [`MAX_BATCH_BYTES`] of payload (at least one record).
+    /// [`CoreError::NoWork`] when the buffer is empty.
     pub fn assign_batch(&mut self, consumer_id: &ConsumerId) -> CoreResult<Batch> {
         self.ensure_dispatch()?;
         if !self.consumers.contains(consumer_id) {

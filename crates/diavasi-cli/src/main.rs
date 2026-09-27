@@ -49,7 +49,7 @@ enum AdapterName {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Run the local control-plane HTTP server.
+    /// Run the server: the control plane (HTTP) and the data plane (TLS gRPC).
     Serve {
         #[arg(long, default_value = "127.0.0.1:7700")]
         bind: SocketAddr,
@@ -162,7 +162,7 @@ enum GroupCmd {
         ordering_contract: String,
         #[arg(long)]
         connection_id: Option<String>,
-        /// JSON source contract for a postgres connection.
+        /// The adapter source contract (`source_spec`) as JSON.
         #[arg(long)]
         source_json: Option<String>,
     },
