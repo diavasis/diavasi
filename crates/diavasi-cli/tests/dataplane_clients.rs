@@ -1,23 +1,14 @@
 //! Python and Elixir compatibility clients against a local `diavasi serve`.
 
-use std::net::TcpListener;
+mod common;
+
+use common::{bin, spawn_serve};
+
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::time::Duration;
 
 use tempfile::tempdir;
-
-fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
-
-fn bin() -> String {
-    env!("CARGO_BIN_EXE_diavasi").to_string()
-}
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -83,32 +74,11 @@ fn python_and_elixir_consume_synthetic_group() {
 
     let dir = tempdir().unwrap();
     let store = dir.path().join("meta.redb");
-    let control_port = free_port();
-    let data_port = free_port();
-    let bind = format!("127.0.0.1:{control_port}");
-    let data_bind = format!("127.0.0.1:{data_port}");
-    let url = format!("http://{bind}");
     let token = "stage5-token";
     let key = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-
-    let mut child = Command::new(bin())
-        .args([
-            "serve",
-            "--bind",
-            &bind,
-            "--data-bind",
-            &data_bind,
-            "--store",
-            store.to_str().unwrap(),
-            "--token",
-            token,
-            "--store-key",
-            key,
-        ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let server = spawn_serve(&store, token, key);
+    let url = server.url.clone();
+    let data_bind = server.data_addr.clone();
 
     wait_healthy(&url);
     let ca = dir.path().join("dataplane-ca.crt");
@@ -152,7 +122,6 @@ fn python_and_elixir_consume_synthetic_group() {
             .output()
             .unwrap();
         if !out.status.success() {
-            let _ = child.kill();
             panic!(
                 "python client failed\nstdout {}\nstderr {}",
                 String::from_utf8_lossy(&out.stdout),
@@ -200,7 +169,6 @@ fn python_and_elixir_consume_synthetic_group() {
             .output()
             .unwrap();
         if !out.status.success() {
-            let _ = child.kill();
             panic!(
                 "elixir client failed\nstdout {}\nstderr {}",
                 String::from_utf8_lossy(&out.stdout),
@@ -209,6 +177,5 @@ fn python_and_elixir_consume_synthetic_group() {
         }
     }
 
-    let _ = child.kill();
-    let _ = child.wait();
+    drop(server);
 }

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted for Stage 6 onward.
+Accepted in v0.6.0.
 
 ## Context
 
@@ -17,12 +17,12 @@ A group with no `connection_id` stays synthetic. A `postgres` connection require
 - `table`: `name` or `schema.name`. Identifiers are quoted. An unqualified name is `public`.
 - `order_by`: ordered columns. Each type is `int2`, `int4`, `int8`, `text`, `varchar`, `bytea`, or `timestamptz`.
 - `payload`: column names, encoded as one JSON object on `Record.payload`.
-- `filter`: optional boolean expression. It is parenthesized and AND-ed with the keyset predicate. `;`, `--`, `/*`, and `*/` are rejected.
+- `filter`: optional boolean expression. It is parenthesized and AND-ed with the keyset predicate. Outside quoted literals and identifiers, `;`, `--`, `/*`, `*/`, and `$` are rejected, and parentheses must balance, so the filter cannot close its own parentheses and bypass the keyset. Literals must not contain a backslash. At group create the full query is prepared, so a filter that does not compile fails there.
 - `acknowledge_unsafe`: optional, default false.
 
-Connection `config_json` is `host`, `port`, `dbname`, `user`, and `sslmode` (`disable` or `require`). The sealed secret is the password, opened only with `open_secret`.
+Connection `config_json` is `host`, `port`, `dbname`, `user`, `sslmode`, and optional `ca_pem`. Keys other than these are rejected, so a misspelled key fails at group create instead of being ignored. `sslmode` is `disable`, `require`, or `verify-full`; `require` and `verify-full` both verify the server certificate, which is stricter than libpq's `require`. `ca_pem` holds PEM CA certificates for a server whose certificate a public root does not sign (RDS, Cloud SQL, a private CA). The sealed secret is the password, opened only with `open_secret`. The source spec rejects unknown keys the same way.
 
-At group create the factory connects and checks that every order column exists, is non-nullable, and has the declared type. A unique index must cover those columns in order (a prefix of a unique, valid, non-partial index). Without one, create fails unless `acknowledge_unsafe` is true.
+At group create the factory connects and checks that every order column exists, is non-nullable, and has the declared type. The order columns must start with every column of a unique, valid, non-partial index, in index order. With `UNIQUE (a, b)`, `order_by` `[a, b]` and `[a, b, c]` qualify and `[a]` does not: a prefix of a unique key is not unique, and the keyset predicate `(a) > $1` would skip the rows that share the last delivered `a`. Without a qualifying index, create fails unless `acknowledge_unsafe` is true.
 
 The reader issues:
 
@@ -47,5 +47,5 @@ Keyset resume is the only resume mechanism. There is no `DECLARE CURSOR`.
 - A payload update does not move the key, so an already-passed row is not delivered again.
 - A delete of a row that has not yet been committed is omitted on the next read from the committed cursor.
 - Updating an ordering column so the new key falls behind the committed cursor drops that row. That is contract breakage, not a bug to hide.
-- `acknowledge_unsafe` allows a group with no matching unique index. Duplicate or unstable order is then the operator's problem.
+- `acknowledge_unsafe` allows a group with no qualifying unique index. When two rows share an order tuple and a batch ends between them, the next read starts after that tuple and the second row is never delivered.
 - CDC, logical replication, and other databases are out of scope.

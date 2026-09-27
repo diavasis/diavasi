@@ -1,4 +1,4 @@
-//! Process-owned Prometheus registry.
+//! Prometheus metrics and log setup.
 //!
 //! Counters move when a fetch, delivery, ack, replay, restart, disconnect, or
 //! adapter error happens. Buffer and in-flight gauges are filled at scrape time
@@ -19,27 +19,52 @@ const LATENCY_BUCKETS: &[f64] = &[
 /// One running group's gauge values, collected when `/metrics` is scraped.
 #[derive(Debug, Clone)]
 pub struct GaugeSample {
+    /// The group.
     pub group_id: String,
+    /// Records in the buffer.
     pub buffer_records: u64,
+    /// Payload bytes in the buffer.
     pub buffer_bytes: u64,
+    /// Records assigned and not yet acked.
     pub inflight_records: u64,
+    /// Buffer plus in-flight records: fetched and not yet committed.
     pub checkpoint_lag: u64,
+    /// Joined consumers.
     pub consumer_count: u64,
 }
 
 /// Counter values for one group, for the diagnostics view.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CounterSnapshot {
+    /// Records read from the source.
     pub records_fetched: u64,
+    /// Records assigned to consumers.
     pub records_delivered: u64,
+    /// Records acked.
     pub records_acked: u64,
+    /// Records returned to the buffer for another delivery.
     pub records_replayed: u64,
+    /// Payload bytes read from the source.
     pub bytes: u64,
+    /// Successful restarts after a failure.
     pub restarts: u64,
+    /// Consumer streams that left or dropped.
     pub consumer_disconnects: u64,
+    /// Source reads that failed.
     pub adapter_errors: u64,
 }
 
+/// The process's metrics registry. Cloning shares it. `docs/observability.md`
+/// lists every metric.
+///
+/// ```
+/// use std::time::Duration;
+/// use diavasi::observe::Observe;
+/// let observe = Observe::new();
+/// observe.record_fetch("orders", "postgres", 200, 12_800, Duration::from_millis(3));
+/// assert_eq!(observe.counters("orders", "postgres").records_fetched, 200);
+/// assert!(observe.render(1, &[]).contains("diavasi_group_records_fetched_total"));
+/// ```
 #[derive(Clone)]
 pub struct Observe {
     inner: Arc<Inner>,
@@ -62,13 +87,16 @@ struct Inner {
     ack_latency: HistogramVec,
     checkpoint_latency: HistogramVec,
     restarts: IntCounterVec,
+    recovery_failures: IntCounterVec,
+    stale_acks: IntCounterVec,
+    contract_failures: IntCounterVec,
     disconnects: IntCounterVec,
     adapter_errors: IntCounterVec,
-    disconnect_totals: Mutex<std::collections::HashMap<String, u64>>,
     scrape: Mutex<()>,
 }
 
 impl Observe {
+    /// A registry with every metric registered and no series.
     pub fn new() -> Self {
         let registry = Registry::new();
         let groups_running = gauge("diavasi_groups_running", "Group runtimes currently running");
@@ -142,10 +170,25 @@ impl Observe {
             "Unexpected group-task exits that the supervisor respawned",
             &["group_id"],
         );
+        let recovery_failures = counter_vec(
+            "diavasi_group_recovery_failures_total",
+            "Restarts of a failed group that could not open its source",
+            &["group_id"],
+        );
+        let stale_acks = counter_vec(
+            "diavasi_group_stale_acks_total",
+            "Acks for batches no longer in flight, usually timed out and redelivered",
+            &["group_id"],
+        );
+        let contract_failures = counter_vec(
+            "diavasi_group_contract_failures_total",
+            "Groups stopped because the source data broke its contract",
+            &["group_id"],
+        );
         let disconnects = counter_vec(
             "diavasi_consumer_disconnects_total",
             "Consumer sessions that left or dropped",
-            &["group_id", "consumer_id"],
+            &["group_id"],
         );
         let adapter_errors = counter_vec(
             "diavasi_adapter_errors_total",
@@ -169,6 +212,9 @@ impl Observe {
             ack_latency.clone().boxed(),
             checkpoint_latency.clone().boxed(),
             restarts.clone().boxed(),
+            recovery_failures.clone().boxed(),
+            stale_acks.clone().boxed(),
+            contract_failures.clone().boxed(),
             disconnects.clone().boxed(),
             adapter_errors.clone().boxed(),
         ] {
@@ -193,14 +239,17 @@ impl Observe {
                 ack_latency,
                 checkpoint_latency,
                 restarts,
+                recovery_failures,
+                stale_acks,
+                contract_failures,
                 disconnects,
                 adapter_errors,
-                disconnect_totals: Mutex::new(std::collections::HashMap::new()),
                 scrape: Mutex::new(()),
             }),
         }
     }
 
+    /// A source read returned `records` records of `bytes` payload bytes in `latency`.
     pub fn record_fetch(
         &self,
         group: &str,
@@ -227,6 +276,7 @@ impl Observe {
             .observe(latency.as_secs_f64());
     }
 
+    /// `records` records were assigned to a consumer.
     pub fn record_deliver(&self, group: &str, adapter: &str, records: u64) {
         if records > 0 {
             self.inner
@@ -236,6 +286,7 @@ impl Observe {
         }
     }
 
+    /// `records` records were acked; applying the ack took `latency`.
     pub fn record_ack(&self, group: &str, adapter: &str, records: u64, latency: Duration) {
         if records > 0 {
             self.inner
@@ -249,6 +300,7 @@ impl Observe {
             .observe(latency.as_secs_f64());
     }
 
+    /// `records` records went back to the buffer for another delivery.
     pub fn record_replay(&self, group: &str, adapter: &str, records: u64) {
         if records > 0 {
             self.inner
@@ -258,6 +310,7 @@ impl Observe {
         }
     }
 
+    /// A checkpoint write took `latency`.
     pub fn record_checkpoint(&self, group: &str, latency: Duration) {
         self.inner
             .checkpoint_latency
@@ -265,24 +318,39 @@ impl Observe {
             .observe(latency.as_secs_f64());
     }
 
+    /// The supervisor restarted the group after a failure.
     pub fn record_restart(&self, group: &str) {
         self.inner.restarts.with_label_values(&[group]).inc();
     }
 
-    pub fn record_disconnect(&self, group: &str, consumer: &str) {
+    /// A restart could not open the source.
+    pub fn record_recovery_failure(&self, group: &str) {
         self.inner
-            .disconnects
-            .with_label_values(&[group, consumer])
+            .recovery_failures
+            .with_label_values(&[group])
             .inc();
-        *self
-            .inner
-            .disconnect_totals
-            .lock()
-            .expect("disconnect totals")
-            .entry(group.to_string())
-            .or_insert(0) += 1;
     }
 
+    /// An ack arrived for a batch no longer in flight.
+    pub fn record_stale_ack(&self, group: &str) {
+        self.inner.stale_acks.with_label_values(&[group]).inc();
+    }
+
+    /// Count a consumer session that left or dropped. The consumer id is
+    /// chosen by clients, so it is logged, not used as a label.
+    pub fn record_disconnect(&self, group: &str) {
+        self.inner.disconnects.with_label_values(&[group]).inc();
+    }
+
+    /// The group stopped because its source broke the contract.
+    pub fn record_contract_failure(&self, group: &str) {
+        self.inner
+            .contract_failures
+            .with_label_values(&[group])
+            .inc();
+    }
+
+    /// A source read failed.
     pub fn record_adapter_error(&self, group: &str, adapter: &str) {
         self.inner
             .adapter_errors
@@ -290,24 +358,48 @@ impl Observe {
             .inc();
     }
 
+    /// Counter values for one group. Reading does not create series.
     pub fn counters(&self, group: &str, adapter: &str) -> CounterSnapshot {
+        let both = [("group_id", group), ("adapter", adapter)];
+        let only_group = [("group_id", group)];
         CounterSnapshot {
-            records_fetched: counter_value(&self.inner.fetched, &[group, adapter]),
-            records_delivered: counter_value(&self.inner.delivered, &[group, adapter]),
-            records_acked: counter_value(&self.inner.acked, &[group, adapter]),
-            records_replayed: counter_value(&self.inner.replayed, &[group, adapter]),
-            bytes: counter_value(&self.inner.bytes, &[group, adapter]),
-            restarts: counter_value(&self.inner.restarts, &[group]),
-            consumer_disconnects: self
-                .inner
-                .disconnect_totals
-                .lock()
-                .expect("disconnect totals")
-                .get(group)
-                .copied()
-                .unwrap_or(0),
-            adapter_errors: counter_value(&self.inner.adapter_errors, &[group, adapter]),
+            records_fetched: counter_value(&self.inner.fetched, &both),
+            records_delivered: counter_value(&self.inner.delivered, &both),
+            records_acked: counter_value(&self.inner.acked, &both),
+            records_replayed: counter_value(&self.inner.replayed, &both),
+            bytes: counter_value(&self.inner.bytes, &both),
+            restarts: counter_value(&self.inner.restarts, &only_group),
+            consumer_disconnects: counter_value(&self.inner.disconnects, &only_group),
+            adapter_errors: counter_value(&self.inner.adapter_errors, &both),
         }
+    }
+
+    /// Remove every series of a deleted group.
+    pub fn forget_group(&self, group: &str, adapter: &str) {
+        let inner = &self.inner;
+        for vec in [
+            &inner.fetched,
+            &inner.delivered,
+            &inner.acked,
+            &inner.replayed,
+            &inner.bytes,
+            &inner.adapter_errors,
+        ] {
+            let _ = vec.remove_label_values(&[group, adapter]);
+        }
+        for vec in [
+            &inner.restarts,
+            &inner.recovery_failures,
+            &inner.stale_acks,
+            &inner.contract_failures,
+            &inner.disconnects,
+        ] {
+            let _ = vec.remove_label_values(&[group]);
+        }
+        for vec in [&inner.fetch_latency, &inner.ack_latency] {
+            let _ = vec.remove_label_values(&[group, adapter]);
+        }
+        let _ = inner.checkpoint_latency.remove_label_values(&[group]);
     }
 
     /// Replace gauge series with `samples` and encode the registry as Prometheus text.
@@ -402,10 +494,24 @@ fn histogram_vec(name: &str, help: &str, labels: &[&str]) -> HistogramVec {
     .expect("histogram")
 }
 
-fn counter_value(counter: &IntCounterVec, labels: &[&str]) -> u64 {
+/// The value of the series whose labels equal `labels`, or 0. Unlike
+/// `get_metric_with_label_values`, this never creates a series.
+fn counter_value(counter: &IntCounterVec, labels: &[(&str, &str)]) -> u64 {
+    use prometheus::core::Collector;
+
     counter
-        .get_metric_with_label_values(labels)
-        .map(|metric| metric.get())
+        .collect()
+        .iter()
+        .flat_map(|family| family.get_metric())
+        .find(|metric| {
+            labels.iter().all(|(name, value)| {
+                metric
+                    .get_label()
+                    .iter()
+                    .any(|pair| pair.get_name() == *name && pair.get_value() == *value)
+            })
+        })
+        .map(|metric| metric.get_counter().get_value() as u64)
         .unwrap_or(0)
 }
 
@@ -419,5 +525,43 @@ where
 {
     fn boxed(self) -> Box<dyn prometheus::core::Collector> {
         Box::new(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// B24: reading counters for diagnostics must not create metric series.
+    #[test]
+    fn regress_b24_reading_counters_does_not_create_series() {
+        let observe = Observe::new();
+        let counters = observe.counters("ghost", "synthetic");
+        assert_eq!(counters.records_fetched, 0);
+        let text = observe.render(0, &[]);
+        assert!(!text.contains("ghost"), "{text}");
+    }
+
+    /// B24: deleting a group removes its series.
+    #[test]
+    fn regress_b24_forget_group_removes_its_series() {
+        let observe = Observe::new();
+        observe.record_fetch("gone", "synthetic", 3, 30, Duration::from_millis(1));
+        observe.record_restart("gone");
+        assert!(observe.render(0, &[]).contains("gone"));
+        observe.forget_group("gone", "synthetic");
+        let text = observe.render(0, &[]);
+        assert!(!text.contains("gone"), "{text}");
+    }
+
+    /// B24: consumer ids are chosen by clients, so they must not become
+    /// labels. `record_disconnect` no longer takes one.
+    #[test]
+    fn regress_b24_disconnects_do_not_label_consumer_ids() {
+        let observe = Observe::new();
+        observe.record_disconnect("g1");
+        let text = observe.render(0, &[]);
+        assert!(!text.contains("consumer_id"), "{text}");
+        assert_eq!(observe.counters("g1", "synthetic").consumer_disconnects, 1);
     }
 }

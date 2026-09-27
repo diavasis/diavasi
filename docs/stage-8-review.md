@@ -47,4 +47,4 @@ Stage 8 is done. Do not start Stage 9 without an explicit instruction.
 
 ## crates.io
 
-`.github/workflows/release.yml` publishes on a tag `vX.Y.Z` that matches `workspace.package.version`. Authentication is crates.io trusted publishing (`id-token: write`, environment `release`). Before the first tag, each of `diavasi`, `diavasi-adapter-postgres`, `diavasi-adapter-mongodb`, and `diavasi-cli` needs a trusted publisher for this repository, workflow `release.yml`, and environment `release`. Redis and Scylla stay `publish = false`.
+`.github/workflows/release.yml` publishes on a tag `vX.Y.Z` that matches `workspace.package.version`. Authentication is the `CARGO_REGISTRY_TOKEN` secret, available to the `release` environment. The job publishes `diavasi`, the four adapters, and `diavasi-cli`.

@@ -93,14 +93,16 @@ impl MongoSource {
             Ok(docs) => docs,
             Err(err) => {
                 tracing::warn!("mongodb fetch failed, reconnecting: {err}");
-                self.client = connect(&self.endpoint).await.map_err(SourceError)?;
+                self.client = connect(&self.endpoint)
+                    .await
+                    .map_err(SourceError::Transient)?;
                 self.find(&self.client.clone(), cursor, limit)
                     .await
-                    .map_err(SourceError)?
+                    .map_err(SourceError::Transient)?
             }
         };
         docs.into_iter()
-            .map(|doc| decode_document(&self.spec, doc).map_err(SourceError))
+            .map(|doc| decode_document(&self.spec, doc).map_err(SourceError::Contract))
             .collect()
     }
 }

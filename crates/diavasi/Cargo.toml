@@ -9,7 +9,9 @@ description = "Durable consumer groups over existing database queries"
 readme = "../../README.md"
 
 [features]
-default = ["transport-bench"]
+# The transport bake-off harness (Stage 0). Off by default so dependents do not
+# build QUIC and WebTransport.
+default = []
 transport-bench = ["dep:quinn", "dep:hdrhistogram", "dep:sysinfo", "dep:wtransport"]
 
 [dependencies]
@@ -20,6 +22,7 @@ futures.workspace = true
 prost.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde_path_to_error.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
@@ -27,6 +30,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 prometheus.workspace = true
 rustls.workspace = true
+tokio-rustls.workspace = true
 tonic = { workspace = true, features = ["tls"] }
 tokio-stream = "0.1"
 quinn = { workspace = true, optional = true }

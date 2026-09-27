@@ -7,18 +7,81 @@ use diavasi::core::{
 };
 use diavasi::runtime::SourceOpen;
 use futures::future::BoxFuture;
-use tokio_postgres::Client;
 use tokio_postgres::types::ToSql;
+use tokio_postgres::{Client, Statement};
 
 use crate::catalog::{ColumnInfo, describe};
-use crate::connect::{PgEndpoint, connect};
+use crate::connect::{PgEndpoint, connect, error_chain};
 use crate::spec::{ColType, SourceSpec, quote_ident};
 
 pub struct PostgresSource {
     client: Client,
     endpoint: PgEndpoint,
     spec: SourceSpec,
-    columns: HashMap<String, ColumnInfo>,
+    statements: Statements,
+    layout: Layout,
+}
+
+/// The two reads, prepared once per connection.
+struct Statements {
+    /// The first page: no cursor.
+    first: Statement,
+    /// A page strictly after a cursor.
+    after: Statement,
+}
+
+impl Statements {
+    async fn prepare(client: &Client, spec: &SourceSpec) -> Result<Self, String> {
+        let prepare = |sql: String| async move {
+            client
+                .prepare(&sql)
+                .await
+                .map_err(|err| format!("source_spec does not compile: {}", error_chain(&err)))
+        };
+        Ok(Self {
+            first: prepare(query_sql(spec, false)).await?,
+            after: prepare(query_sql(spec, true)).await?,
+        })
+    }
+}
+
+/// Where each order and payload column sits in a result row.
+struct Layout {
+    order: Vec<(ColType, usize)>,
+    payload: Vec<(String, ColumnInfo, usize)>,
+}
+
+impl Layout {
+    fn new(
+        spec: &SourceSpec,
+        columns: &HashMap<String, ColumnInfo>,
+        statement: &Statement,
+    ) -> Result<Self, String> {
+        let position = |name: &str| {
+            statement
+                .columns()
+                .iter()
+                .position(|column| column.name() == name)
+                .ok_or_else(|| format!("missing selected column {name}"))
+        };
+        let order = spec
+            .order_by
+            .iter()
+            .map(|col| Ok((col.ty, position(&col.name)?)))
+            .collect::<Result<_, String>>()?;
+        let payload = spec
+            .payload
+            .iter()
+            .map(|name| {
+                let info = columns
+                    .get(name)
+                    .cloned()
+                    .ok_or_else(|| format!("missing payload type for {name}"))?;
+                Ok((name.clone(), info, position(name)?))
+            })
+            .collect::<Result<_, String>>()?;
+        Ok(Self { order, payload })
+    }
 }
 
 impl PostgresSource {
@@ -30,28 +93,47 @@ impl PostgresSource {
             .application_name(format!("diavasi:{}", spec.table));
         let client = connect(&endpoint).await?;
         let columns = describe(&client, &spec).await?;
+        // Preparing surfaces filter and type errors at group create, not on
+        // the first fetch.
+        let statements = Statements::prepare(&client, &spec).await?;
+        let layout = Layout::new(&spec, &columns, &statements.first)?;
         Ok(Self {
             client,
             endpoint,
             spec,
-            columns,
+            statements,
+            layout,
         })
     }
 
+    /// Run the prepared read. After a failure, reconnect, prepare again, and
+    /// retry once.
     async fn query_rows(
         &mut self,
-        sql: &str,
+        with_cursor: bool,
         params: &[&(dyn ToSql + Sync)],
     ) -> Result<Vec<tokio_postgres::Row>, String> {
-        match self.client.query(sql, params).await {
+        let statement = |statements: &Statements| {
+            if with_cursor {
+                statements.after.clone()
+            } else {
+                statements.first.clone()
+            }
+        };
+        match self
+            .client
+            .query(&statement(&self.statements), params)
+            .await
+        {
             Ok(rows) => Ok(rows),
             Err(err) => {
-                tracing::warn!("postgres fetch failed, reconnecting: {}", pg_error(&err));
+                tracing::warn!("postgres fetch failed, reconnecting: {}", error_chain(&err));
                 self.client = connect(&self.endpoint).await?;
+                self.statements = Statements::prepare(&self.client, &self.spec).await?;
                 self.client
-                    .query(sql, params)
+                    .query(&statement(&self.statements), params)
                     .await
-                    .map_err(|err| pg_error(&err))
+                    .map_err(|err| error_chain(&err))
             }
         }
     }
@@ -64,17 +146,18 @@ impl PostgresSource {
         if limit == 0 {
             return Ok(Vec::new());
         }
-        let (sql, owned) = build_query(&self.spec, cursor, limit).map_err(SourceError)?;
+        let owned = query_params(&self.spec, cursor, limit).map_err(SourceError::Contract)?;
         let refs: Vec<&(dyn ToSql + Sync)> = owned
             .iter()
             .map(|p| p.as_ref() as &(dyn ToSql + Sync))
             .collect();
-        let rows = self.query_rows(&sql, &refs).await.map_err(SourceError)?;
-        let mut out = Vec::with_capacity(rows.len());
-        for row in rows {
-            out.push(decode_row(&self.spec, &self.columns, &row).map_err(SourceError)?);
-        }
-        Ok(out)
+        let rows = self
+            .query_rows(cursor.is_some(), &refs)
+            .await
+            .map_err(SourceError::Transient)?;
+        rows.iter()
+            .map(|row| decode_row(&self.layout, row).map_err(SourceError::Contract))
+            .collect()
     }
 }
 
@@ -88,30 +171,29 @@ impl RecordSource for PostgresSource {
     }
 }
 
-fn pg_error(err: &tokio_postgres::Error) -> String {
-    let mut message = err.to_string();
-    let mut source = std::error::Error::source(err);
-    while let Some(inner) = source {
-        message.push_str(": ");
-        message.push_str(&inner.to_string());
-        source = std::error::Error::source(inner);
-    }
-    message
-}
-
+/// The read and its parameters for `cursor`. Used by tests; the source runs
+/// the prepared form of [`query_sql`] with [`query_params`].
+#[cfg(test)]
 fn build_query(
     spec: &SourceSpec,
     cursor: &LogicalCursor,
     limit: usize,
 ) -> Result<(String, Vec<Box<dyn ToSql + Sync + Send>>), String> {
+    let params = query_params(spec, cursor, limit)?;
+    Ok((query_sql(spec, cursor.is_some()), params))
+}
+
+/// `SELECT` of the order and payload columns, filtered, after the cursor
+/// when `with_cursor`, in order, with the limit as the last parameter.
+fn query_sql(spec: &SourceSpec, with_cursor: bool) -> String {
     let mut select = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for col in &spec.order_by {
-        if seen.insert(col.name.clone()) {
-            select.push(quote_ident(&col.name));
-        }
-    }
-    for name in &spec.payload {
+    for name in spec
+        .order_by
+        .iter()
+        .map(|col| &col.name)
+        .chain(spec.payload.iter())
+    {
         if seen.insert(name.clone()) {
             select.push(quote_ident(name));
         }
@@ -128,25 +210,17 @@ fn build_query(
             }
         })
         .collect();
-    let mut params: Vec<Box<dyn ToSql + Sync + Send>> = Vec::new();
     let mut sql = format!("SELECT {} FROM {} ", select.join(", "), spec.quoted_table());
     let mut predicates = Vec::new();
     if let Some(filter) = &spec.filter {
         predicates.push(format!("({filter})"));
     }
-    if let Some(cursor) = cursor {
-        if cursor.atoms().len() != spec.order_by.len() {
-            return Err("cursor width does not match order_by".into());
-        }
-        let placeholders: Vec<String> = spec
-            .order_by
-            .iter()
-            .zip(cursor.atoms())
-            .map(|(col, atom)| {
-                params.push(atom_param(col.ty, atom)?);
-                Ok(format!("${}", params.len()))
-            })
-            .collect::<Result<Vec<_>, String>>()?;
+    let mut next_param = 1;
+    if with_cursor {
+        let placeholders: Vec<String> = (0..spec.order_by.len())
+            .map(|i| format!("${}", next_param + i))
+            .collect();
+        next_param += spec.order_by.len();
         predicates.push(format!(
             "({}) > ({})",
             order_exprs.join(", "),
@@ -158,15 +232,32 @@ fn build_query(
         sql.push_str(&predicates.join(" AND "));
         sql.push(' ');
     }
+    sql.push_str(&format!(
+        "ORDER BY {} LIMIT ${next_param}",
+        order_exprs.join(", ")
+    ));
+    sql
+}
+
+/// Parameters for [`query_sql`]: the cursor values, then the limit.
+fn query_params(
+    spec: &SourceSpec,
+    cursor: &LogicalCursor,
+    limit: usize,
+) -> Result<Vec<Box<dyn ToSql + Sync + Send>>, String> {
+    let mut params: Vec<Box<dyn ToSql + Sync + Send>> = Vec::new();
+    if let Some(cursor) = cursor {
+        if cursor.atoms().len() != spec.order_by.len() {
+            return Err("cursor width does not match order_by".into());
+        }
+        for (col, atom) in spec.order_by.iter().zip(cursor.atoms()) {
+            params.push(atom_param(col.ty, atom)?);
+        }
+    }
     params.push(Box::new(
         i64::try_from(limit).map_err(|_| "limit overflow")?,
     ));
-    sql.push_str(&format!(
-        "ORDER BY {} LIMIT ${}",
-        order_exprs.join(", "),
-        params.len()
-    ));
-    Ok((sql, params))
+    Ok(params)
 }
 
 fn atom_param(ty: ColType, atom: &OrderingAtom) -> Result<Box<dyn ToSql + Sync + Send>, String> {
@@ -190,31 +281,14 @@ fn atom_param(ty: ColType, atom: &OrderingAtom) -> Result<Box<dyn ToSql + Sync +
     }
 }
 
-fn decode_row(
-    spec: &SourceSpec,
-    columns: &HashMap<String, ColumnInfo>,
-    row: &tokio_postgres::Row,
-) -> Result<Record, String> {
-    let mut atoms = Vec::new();
-    for col in &spec.order_by {
-        let index = row
-            .columns()
-            .iter()
-            .position(|column| column.name() == col.name)
-            .ok_or_else(|| format!("missing selected column {}", col.name))?;
-        atoms.push(read_order(col.ty, row, index)?);
+fn decode_row(layout: &Layout, row: &tokio_postgres::Row) -> Result<Record, String> {
+    let mut atoms = Vec::with_capacity(layout.order.len());
+    for (ty, index) in &layout.order {
+        atoms.push(read_order(*ty, row, *index)?);
     }
     let mut payload = serde_json::Map::new();
-    for name in &spec.payload {
-        let info = columns
-            .get(name)
-            .ok_or_else(|| format!("missing payload type for {name}"))?;
-        let index = row
-            .columns()
-            .iter()
-            .position(|column| column.name() == name)
-            .ok_or_else(|| format!("missing selected column {name}"))?;
-        payload.insert(name.clone(), read_json(info, row, index)?);
+    for (name, info, index) in &layout.payload {
+        payload.insert(name.clone(), read_json(info, row, *index)?);
     }
     Ok(Record {
         ordering: OrderingValue::new(atoms).map_err(|err| err.to_string())?,
@@ -273,7 +347,7 @@ fn read_json(
             serde_json::Value::String,
         ),
         ColType::Bytea => json_opt(row.try_get::<_, Option<Vec<u8>>>(index), |bytes| {
-            serde_json::Value::String(hex_encode(&bytes))
+            serde_json::Value::String(hex::encode(bytes))
         }),
         ColType::Timestamptz => {
             let value = row
@@ -320,16 +394,6 @@ fn time_to_micros(ts: SystemTime) -> Result<i64, String> {
             Ok(-micros)
         }
     }
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        out.push(HEX[(byte >> 4) as usize] as char);
-        out.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    out
 }
 
 #[cfg(test)]
@@ -413,7 +477,6 @@ mod tests {
 
     #[test]
     fn timestamps_and_hex() {
-        assert_eq!(hex_encode(&[0x0a, 0xff]), "0aff");
         assert_eq!(
             time_to_micros(UNIX_EPOCH + Duration::from_micros(7)).unwrap(),
             7

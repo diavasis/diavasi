@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted for Stage 1 onward.
+Accepted in v0.1.0.
 
 ## Decision
 
@@ -11,6 +11,7 @@ Accepted for Stage 1 onward.
 - Out-of-order batch completion is allowed; gaps hold the committed cursor.
 - In-flight assignments are **not** part of the durable snapshot. Restart resumes from `committed` and may **replay** uncertain work (at-least-once).
 - Fetched progress may lead committed progress because of buffering.
+- By default an ack is answered after the checkpoint it produced is written. Acks that wait in the group's mailbox together share one write. With `--checkpoint-interval-ms`, acks are answered at once and the checkpoint is written at most once per interval and on pause, drain, and shutdown; a crash then replays up to one interval of acked records. Either way the committed cursor in the store never runs ahead of the acks.
 
 ## Consequences
 

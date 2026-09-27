@@ -1,14 +1,12 @@
 use crate::connect::{RedisEndpoint, connect};
-use crate::spec::{SourceSpec, cursor_to_id, id_to_ordering};
+use crate::spec::{SourceSpec, cursor_to_pair, id_to_ordering, id_to_pair};
 use bytes::Bytes;
 use diavasi::core::{LogicalCursor, Record, RecordSource, SourceError};
 use diavasi::runtime::SourceOpen;
 use futures::future::BoxFuture;
 use redis::AsyncCommands;
 use redis::aio::ConnectionManager;
-use redis::streams::{StreamId, StreamReadOptions, StreamReadReply};
-
-const CONSUMER: &str = "diavasi";
+use redis::streams::{StreamId, StreamRangeReply};
 
 pub struct RedisSource {
     conn: ConnectionManager,
@@ -22,7 +20,6 @@ impl RedisSource {
         let endpoint = RedisEndpoint::from_request(&request)?;
         let mut conn = connect(&endpoint).await?;
         ensure_stream(&mut conn, &spec.stream).await?;
-        ensure_group(&mut conn, &spec).await?;
         Ok(Self {
             conn,
             endpoint,
@@ -89,14 +86,14 @@ impl RedisSource {
         }
         let mut conn = self.conn.clone();
         match read_after(&mut conn, &self.spec, cursor, limit).await {
-            Ok(records) => Ok(records),
-            Err(err) => {
+            Err(SourceError::Transient(err)) => {
                 tracing::warn!("redis fetch failed, reconnecting: {err}");
-                self.conn = connect(&self.endpoint).await.map_err(SourceError)?;
-                read_after(&mut self.conn, &self.spec, cursor, limit)
+                self.conn = connect(&self.endpoint)
                     .await
-                    .map_err(SourceError)
+                    .map_err(SourceError::Transient)?;
+                read_after(&mut self.conn, &self.spec, cursor, limit).await
             }
+            other => other,
         }
     }
 }
@@ -120,57 +117,101 @@ async fn ensure_stream(conn: &mut ConnectionManager, stream: &str) -> Result<(),
     }
 }
 
-async fn ensure_group(conn: &mut ConnectionManager, spec: &SourceSpec) -> Result<(), String> {
-    match conn
-        .xgroup_create::<_, _, _, ()>(&spec.stream, &spec.group, "0-0")
-        .await
-    {
-        Ok(()) => Ok(()),
-        Err(err) if is_busy_group(&err) => Ok(()),
-        Err(err) => Err(err.to_string()),
-    }
-}
-
-fn is_busy_group(err: &redis::RedisError) -> bool {
-    err.code() == Some("BUSYGROUP") || err.to_string().contains("BUSYGROUP")
-}
-
+/// Read up to `limit` entries strictly after `cursor` with
+/// `XRANGE key (<ms>-<seq> + COUNT limit`. The read does not write to Redis:
+/// no consumer group is created or moved, so readers of one stream cannot
+/// disturb each other.
 async fn read_after(
     conn: &mut ConnectionManager,
     spec: &SourceSpec,
     cursor: &LogicalCursor,
     limit: usize,
-) -> Result<Vec<Record>, String> {
-    ensure_group(conn, spec).await?;
-    let id = cursor_to_id(cursor)?;
-    let _: () = conn
-        .xgroup_setid(&spec.stream, &spec.group, &id)
+) -> Result<Vec<Record>, SourceError> {
+    let start = match cursor_to_pair(cursor).map_err(SourceError::Contract)? {
+        None => "-".to_string(),
+        Some(after) => {
+            check_no_gap(conn, &spec.stream, after).await?;
+            format!("({}-{}", after.0, after.1)
+        }
+    };
+    let reply: StreamRangeReply = conn
+        .xrange_count(&spec.stream, start, "+", limit)
         .await
-        .map_err(|err| err.to_string())?;
-    let options = StreamReadOptions::default()
-        .group(&spec.group, CONSUMER)
-        .count(limit);
-    let reply: Option<StreamReadReply> = conn
-        .xread_options(&[spec.stream.as_str()], &[">"], &options)
-        .await
-        .map_err(|err| err.to_string())?;
-    let entries = reply.map(flatten).unwrap_or_default();
-    let mut records = Vec::with_capacity(entries.len());
-    for entry in &entries {
-        records.push(record_from_entry(spec, entry)?);
-    }
-    if !entries.is_empty() {
-        let ids: Vec<&str> = entries.iter().map(|entry| entry.id.as_str()).collect();
-        let _: i64 = conn
-            .xack(&spec.stream, &spec.group, &ids)
-            .await
-            .map_err(|err| err.to_string())?;
-    }
-    Ok(records)
+        .map_err(|err| SourceError::Transient(err.to_string()))?;
+    reply
+        .ids
+        .iter()
+        .map(|entry| record_from_entry(spec, entry).map_err(SourceError::Contract))
+        .collect()
 }
 
-fn flatten(reply: StreamReadReply) -> Vec<StreamId> {
-    reply.keys.into_iter().flat_map(|key| key.ids).collect()
+/// Fail when trimming removed entries after `after` before they were read.
+///
+/// Redis does not report which ids a trim removed, so the check infers it
+/// from `XINFO STREAM` (Redis 7.0 or later; skipped on older servers):
+///
+/// - every entry up to the cursor is gone (the first entry is after it),
+/// - entries were removed (`entries-added` exceeds `length`), and
+/// - no `XDEL` reached the cursor (`max-deleted-entry-id` is before it).
+///
+/// The last condition keeps applications that `XDEL` processed entries from
+/// being reported. A trim that stops exactly at the cursor is also reported,
+/// because it cannot be told apart from one that went further.
+async fn check_no_gap(
+    conn: &mut ConnectionManager,
+    stream: &str,
+    after: (u64, u64),
+) -> Result<(), SourceError> {
+    let info: std::collections::HashMap<String, redis::Value> = redis::cmd("XINFO")
+        .arg("STREAM")
+        .arg(stream)
+        .query_async(conn)
+        .await
+        .map_err(|err| SourceError::Transient(err.to_string()))?;
+    stream_gap(stream, after, &info).map_err(SourceError::Contract)
+}
+
+/// The gap rule of [`check_no_gap`] applied to an `XINFO STREAM` reply.
+fn stream_gap(
+    stream: &str,
+    after: (u64, u64),
+    info: &std::collections::HashMap<String, redis::Value>,
+) -> Result<(), String> {
+    let text = |key: &str| -> Result<Option<String>, String> {
+        info.get(key)
+            .map(|value| redis::from_redis_value::<String>(value).map_err(|err| err.to_string()))
+            .transpose()
+    };
+    let number = |key: &str| -> Result<Option<u64>, String> {
+        info.get(key)
+            .map(|value| redis::from_redis_value::<u64>(value).map_err(|err| err.to_string()))
+            .transpose()
+    };
+    let (Some(max_deleted), Some(added), Some(length)) = (
+        text("max-deleted-entry-id")?,
+        number("entries-added")?,
+        number("length")?,
+    ) else {
+        return Ok(());
+    };
+    let max_deleted = id_to_pair(&max_deleted)?;
+    let first = match info.get("first-entry") {
+        Some(redis::Value::Array(entry)) => match entry.first() {
+            Some(id) => Some(id_to_pair(
+                &redis::from_redis_value::<String>(id).map_err(|err| err.to_string())?,
+            )?),
+            None => None,
+        },
+        _ => None,
+    };
+    let head_passed_cursor = first.is_none_or(|first| first > after);
+    if head_passed_cursor && added > length && max_deleted < after {
+        return Err(format!(
+            "stream {stream} was trimmed past the committed cursor {}-{}; entries after it were removed before delivery",
+            after.0, after.1
+        ));
+    }
+    Ok(())
 }
 
 fn record_from_entry(spec: &SourceSpec, entry: &StreamId) -> Result<Record, String> {

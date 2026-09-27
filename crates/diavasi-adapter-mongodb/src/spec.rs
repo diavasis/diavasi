@@ -1,3 +1,5 @@
+use diavasi::core::encoding;
+use diavasi::runtime::parse_json;
 use mongodb::bson::{Document, doc};
 use serde_json::Value;
 
@@ -59,74 +61,17 @@ impl Direction {
 
 /// Map a signed value so a descending field still increases along the stream.
 pub fn order_i64(value: i64, direction: Direction) -> i64 {
-    match direction {
-        Direction::Asc => value,
-        Direction::Desc => !value,
-    }
+    encoding::order_i64(value, direction == Direction::Desc)
 }
 
-/// Bytes the cursor stores. Ascending keeps the canonical bytes. Descending
-/// stores the bitwise complement of a memcomparable encoding, which reverses
-/// order including the case where one value is a prefix of the other.
+/// Bytes the cursor stores. See [`encoding::order_bytes`].
 pub fn canonical_to_atom_bytes(bytes: &[u8], direction: Direction) -> Vec<u8> {
-    match direction {
-        Direction::Asc => bytes.to_vec(),
-        Direction::Desc => encode_memcomparable(bytes)
-            .into_iter()
-            .map(|b| !b)
-            .collect(),
-    }
+    encoding::order_bytes(bytes, direction == Direction::Desc)
 }
 
+/// The value bytes of a cursor atom. See [`encoding::unorder_bytes`].
 pub fn atom_bytes_to_canonical(bytes: &[u8], direction: Direction) -> Result<Vec<u8>, String> {
-    match direction {
-        Direction::Asc => Ok(bytes.to_vec()),
-        Direction::Desc => {
-            let flipped: Vec<u8> = bytes.iter().copied().map(|b| !b).collect();
-            decode_memcomparable(&flipped)
-        }
-    }
-}
-
-fn encode_memcomparable(src: &[u8]) -> Vec<u8> {
-    let mut buf = Vec::new();
-    let mut index = 0;
-    loop {
-        let remain = src.len().saturating_sub(index);
-        let n = remain.min(8);
-        let mut group = [0u8; 9];
-        if n > 0 {
-            group[..n].copy_from_slice(&src[index..index + n]);
-        }
-        group[8] = n as u8;
-        buf.extend_from_slice(&group);
-        if n < 8 {
-            break;
-        }
-        index += 8;
-    }
-    buf
-}
-
-fn decode_memcomparable(src: &[u8]) -> Result<Vec<u8>, String> {
-    if src.is_empty() || src.len() % 9 != 0 {
-        return Err("bad ordered bytes".into());
-    }
-    let mut out = Vec::new();
-    for group in src.chunks_exact(9) {
-        let n = group[8] as usize;
-        if n > 8 {
-            return Err("bad ordered bytes".into());
-        }
-        if group[n..8].iter().any(|byte| *byte != 0) {
-            return Err("bad ordered bytes".into());
-        }
-        out.extend_from_slice(&group[..n]);
-        if n < 8 {
-            return Ok(out);
-        }
-    }
-    Err("ordered bytes ended on a full group".into())
+    encoding::unorder_bytes(bytes, direction == Direction::Desc)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,59 +90,74 @@ pub struct SourceSpec {
     pub acknowledge_unsafe: bool,
 }
 
+/// The `source_spec` JSON as written. Checked into a [`SourceSpec`].
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawSpec {
+    collection: String,
+    #[serde(default)]
+    order_by: Option<Vec<RawOrderField>>,
+    #[serde(default)]
+    fields: Option<Vec<String>>,
+    #[serde(default)]
+    filter: Option<serde_json::Map<String, Value>>,
+    #[serde(default)]
+    acknowledge_unsafe: Option<bool>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawOrderField {
+    field: String,
+    #[serde(rename = "type")]
+    ty: String,
+    direction: String,
+}
+
 impl SourceSpec {
     pub fn parse(value: &Value) -> Result<Self, String> {
-        let collection = value
-            .get("collection")
-            .and_then(|v| v.as_str())
-            .ok_or("source_spec.collection is required")?;
-        check_collection(collection)?;
-        let order_by = match value.get("order_by") {
+        let raw: RawSpec = parse_json(value, "source_spec")?;
+        check_collection(&raw.collection)?;
+        let order_by = match raw.order_by {
             None => vec![OrderField {
                 field: "_id".into(),
                 ty: FieldType::ObjectId,
                 direction: Direction::Asc,
             }],
-            Some(Value::Array(items)) if items.is_empty() => {
+            Some(items) if items.is_empty() => {
                 return Err("source_spec.order_by must be non-empty".into());
             }
-            Some(Value::Array(items)) => items.iter().map(parse_order).collect::<Result<_, _>>()?,
-            Some(_) => return Err("source_spec.order_by must be an array".into()),
+            Some(items) => items
+                .into_iter()
+                .map(|item| {
+                    check_field(&item.field)?;
+                    Ok(OrderField {
+                        field: item.field,
+                        ty: FieldType::parse(&item.ty)?,
+                        direction: Direction::parse(&item.direction)?,
+                    })
+                })
+                .collect::<Result<_, String>>()?,
         };
-        let fields = match value.get("fields") {
-            None | Some(Value::Null) => None,
-            Some(Value::Array(items)) => {
-                let mut names = Vec::new();
-                for item in items {
-                    let name = item.as_str().ok_or("fields entries must be strings")?;
-                    check_field(name)?;
-                    names.push(name.to_string());
-                }
-                Some(names)
+        if let Some(names) = &raw.fields {
+            for name in names {
+                check_field(name)?;
             }
-            Some(_) => return Err("source_spec.fields must be an array".into()),
-        };
-        let filter = match value.get("filter") {
-            None | Some(Value::Null) => None,
-            Some(other) => {
-                if !other.is_object() {
-                    return Err("source_spec.filter must be an object".into());
-                }
-                reject_filter_ops(other)?;
-                Some(mongodb::bson::to_document(other).map_err(|err| err.to_string())?)
+        }
+        let filter = match raw.filter {
+            None => None,
+            Some(map) => {
+                let filter = Value::Object(map);
+                reject_filter_ops(&filter)?;
+                Some(mongodb::bson::to_document(&filter).map_err(|err| err.to_string())?)
             }
-        };
-        let acknowledge_unsafe = match value.get("acknowledge_unsafe") {
-            None | Some(Value::Null) => false,
-            Some(Value::Bool(flag)) => *flag,
-            Some(_) => return Err("source_spec.acknowledge_unsafe must be a bool".into()),
         };
         Ok(Self {
-            collection: collection.to_string(),
+            collection: raw.collection,
             order_by,
-            fields,
+            fields: raw.fields,
             filter,
-            acknowledge_unsafe,
+            acknowledge_unsafe: raw.acknowledge_unsafe.unwrap_or(false),
         })
     }
 
@@ -222,29 +182,10 @@ impl SourceSpec {
     }
 }
 
-fn parse_order(value: &Value) -> Result<OrderField, String> {
-    let field = value
-        .get("field")
-        .and_then(|v| v.as_str())
-        .ok_or("order_by.field is required")?;
-    check_field(field)?;
-    let ty = value
-        .get("type")
-        .and_then(|v| v.as_str())
-        .ok_or("order_by.type is required")?;
-    let direction = value
-        .get("direction")
-        .and_then(|v| v.as_str())
-        .ok_or("order_by.direction is required")?;
-    Ok(OrderField {
-        field: field.to_string(),
-        ty: FieldType::parse(ty)?,
-        direction: Direction::parse(direction)?,
-    })
-}
-
+/// MongoDB allows dots in collection names (`app.events`). It reserves `$`,
+/// NUL, and the `system.` prefix.
 fn check_collection(name: &str) -> Result<(), String> {
-    if name.is_empty() || name.contains(['$', '\0', '.']) || name.starts_with("system.") {
+    if name.is_empty() || name.contains(['$', '\0']) || name.starts_with("system.") {
         return Err(format!("invalid collection name {name}"));
     }
     Ok(())
@@ -407,5 +348,18 @@ mod tests {
         }
         assert_eq!(order_i64(5, Direction::Desc), !5);
         assert_eq!(order_i64(!5, Direction::Desc), 5);
+    }
+
+    /// S2: a misspelled key is an error, not an option left at its default.
+    #[test]
+    fn rejects_unknown_keys() {
+        let err = SourceSpec::parse(&json!({"collection": "events", "filtr": {}})).unwrap_err();
+        assert!(err.contains("filtr"), "{err}");
+        let err = SourceSpec::parse(&json!({
+            "collection": "events",
+            "order_by": [{"field": "_id", "type": "objectId", "direction": "asc", "x": 1}],
+        }))
+        .unwrap_err();
+        assert!(err.contains("x"), "{err}");
     }
 }

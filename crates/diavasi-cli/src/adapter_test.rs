@@ -1,12 +1,11 @@
 //! Seed one adapter backend and consume the rows through a short-lived server.
 
 use std::collections::HashSet;
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::time::{Duration, Instant};
 
-use diavasi::control::{ServeConfig, serve};
+use diavasi::control::{Listeners, ServeConfig, serve_on};
 use diavasi::dataplane::{ConsumerClient, ConsumerOptions, SharedProgress};
 use diavasi::store::StoreKey;
 use diavasi_adapter_mongodb::connect::{MongoEndpoint, connect as connect_mongo};
@@ -211,7 +210,6 @@ async fn prepare_redis(test: &AdapterTest) -> Result<Prepared, String> {
         },
         source_spec: serde_json::json!({
             "stream": test.object,
-            "group": format!("{}-g", test.object),
         }),
         ordering_contract: "redis-stream".into(),
     })
@@ -302,8 +300,14 @@ async fn consume(test: &AdapterTest, prepared: &Prepared) -> Result<Report, Stri
         std::process::id()
     ));
     std::fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
-    let control = bind_addr()?;
-    let data = bind_addr()?;
+    // Bound before the server starts, so no other process can take the ports.
+    let listeners = Listeners::bind(
+        "127.0.0.1:0".parse().expect("address"),
+        "127.0.0.1:0".parse().expect("address"),
+    )
+    .map_err(|err| err.to_string())?;
+    let control = listeners.control_addr();
+    let data = listeners.data_addr();
     let token = "adapter-test".to_string();
     let config = ServeConfig {
         bind: control,
@@ -314,9 +318,13 @@ async fn consume(test: &AdapterTest, prepared: &Prepared) -> Result<Report, Stri
         tls_cert: None,
         tls_key: None,
         source_factory: Some(Arc::new(RoutingFactory::installed())),
+        checkpoint_interval: std::time::Duration::ZERO,
+        tls_san: Vec::new(),
+        http_tls_cert: None,
+        http_tls_key: None,
     };
     let server = tokio::spawn(async move {
-        if let Err(err) = serve(config).await {
+        if let Err(err) = serve_on(config, listeners, std::future::pending()).await {
             tracing::error!("serve ended: {err}");
         }
     });
@@ -362,7 +370,6 @@ async fn consume_group(
         &serde_json::json!({
             "group_id": "t",
             "total_records": 0,
-            "payload_size": test.payload_bytes,
             "max_buffer_records": 4_096,
             "max_buffer_bytes": max_buffer_bytes,
             "batch_max_records": batch,
@@ -404,8 +411,11 @@ async fn consume_group(
     .await
     .map_err(|err| err.to_string())?;
     let elapsed = started.elapsed();
+    // Delivery is at-least-once: a record can arrive twice. Every seeded
+    // record must arrive; repeats are reported, not failures. Redis ids are
+    // two integers, so `record_id` is 0 there and only the count is checked.
     let deliveries = report.record_ids.len() as u64;
-    if deliveries != test.records {
+    if deliveries < test.records {
         return Err(format!(
             "expected {} deliveries, got {deliveries}",
             test.records
@@ -418,7 +428,7 @@ async fn consume_group(
             .copied()
             .collect::<HashSet<_>>()
             .len() as u64;
-        if distinct != test.records {
+        if distinct < test.records {
             return Err(format!(
                 "expected {} distinct ids, got {distinct}",
                 test.records
@@ -479,11 +489,6 @@ fn ident(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn bind_addr() -> Result<SocketAddr, String> {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").map_err(|err| err.to_string())?;
-    listener.local_addr().map_err(|err| err.to_string())
-}
-
 async fn wait_health(base: &str) -> Result<(), String> {
     let http = reqwest::Client::new();
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -526,6 +531,16 @@ async fn post(
 mod tests {
     use super::*;
 
+    /// Reads a database URL. With `DIAVASI_REQUIRE_DB=1` a missing URL fails the
+    /// test instead of skipping it.
+    fn env_url(name: &str) -> Option<String> {
+        let url = std::env::var(name).ok().filter(|url| !url.is_empty());
+        if url.is_none() && std::env::var("DIAVASI_REQUIRE_DB").as_deref() == Ok("1") {
+            panic!("DIAVASI_REQUIRE_DB=1 but {name} is not set");
+        }
+        url
+    }
+
     fn sample(adapter: AdapterKind, object: &str) -> AdapterTest {
         AdapterTest {
             adapter,
@@ -554,11 +569,7 @@ mod tests {
 
     #[tokio::test]
     async fn postgres_seed_and_consume() {
-        if std::env::var("DATABASE_URL")
-            .ok()
-            .filter(|url| !url.is_empty())
-            .is_none()
-        {
+        if env_url("DATABASE_URL").is_none() {
             return;
         }
         let object = format!("dt_pg_{}", std::process::id());
@@ -569,11 +580,7 @@ mod tests {
 
     #[tokio::test]
     async fn mongodb_seed_and_consume() {
-        if std::env::var("MONGODB_URL")
-            .ok()
-            .filter(|url| !url.is_empty())
-            .is_none()
-        {
+        if env_url("MONGODB_URL").is_none() {
             return;
         }
         let object = format!("dt_mg_{}", std::process::id());
@@ -584,11 +591,7 @@ mod tests {
 
     #[tokio::test]
     async fn redis_seed_and_consume() {
-        if std::env::var("REDIS_URL")
-            .ok()
-            .filter(|url| !url.is_empty())
-            .is_none()
-        {
+        if env_url("REDIS_URL").is_none() {
             return;
         }
         let object = format!("dt_rd_{}", std::process::id());
@@ -599,11 +602,7 @@ mod tests {
 
     #[tokio::test]
     async fn scylla_seed_and_consume() {
-        if std::env::var("SCYLLA_URL")
-            .ok()
-            .filter(|url| !url.is_empty())
-            .is_none()
-        {
+        if env_url("SCYLLA_URL").is_none() {
             return;
         }
         let object = format!("dt_sy_{}", std::process::id());

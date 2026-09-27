@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted for Stage 0 onward. Revisit if Rust supervision complexity materially harms correctness.
+Accepted in v0.0.0. Revisit if Rust supervision complexity materially harms correctness.
 
 ## Decision
 

@@ -4,36 +4,56 @@ use super::error_codes::{BAD_STATE, BAD_VERSION, DUPLICATE_ACK, UNKNOWN_ACK, UNS
 use super::pb::envelope::Body;
 use super::{Envelope, PROTOCOL_VERSION, error_envelope, hello_ack};
 
+/// Unacked batches allowed on a stream before the client sends `FlowControl`.
 pub const DEFAULT_MAX_IN_FLIGHT: u32 = 1;
 const MAX_IN_FLIGHT_CAP: u32 = 1024;
 
+/// Where a session is in the protocol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
+    /// Waiting for `Hello`.
     ExpectHello,
+    /// Waiting for `JoinGroup`.
     ExpectJoin,
+    /// Joined: batches flow and acks are accepted.
     Active,
+    /// Closed after an error or `Leave`.
     Closed,
 }
 
+/// Work a frame asks the server to do outside the session.
 #[derive(Debug)]
 pub enum Effect {
+    /// Join the group.
     Join {
+        /// The group to join.
         group_id: String,
+        /// The consumer id to join as.
         consumer_id: String,
     },
+    /// Ack a batch.
     Ack {
+        /// The batch to ack.
         batch_id: u64,
     },
+    /// Leave the group.
     Leave,
 }
 
+/// What the server does after one client frame.
 #[derive(Debug)]
 pub struct Step {
+    /// Frames to send back, in order.
     pub frames: Vec<Envelope>,
+    /// Work to do, in order.
     pub effects: Vec<Effect>,
+    /// True when the stream ends after the frames are sent.
     pub close: bool,
 }
 
+/// The protocol state machine for one stream, without I/O. Feed it client
+/// frames with [`Session::on_frame`]; send its frames and carry out its
+/// effects.
 #[derive(Debug)]
 pub struct Session {
     phase: Phase,
@@ -49,6 +69,7 @@ impl Default for Session {
 }
 
 impl Session {
+    /// A session waiting for `Hello`.
     pub fn new() -> Self {
         Self {
             phase: Phase::ExpectHello,
@@ -58,30 +79,37 @@ impl Session {
         }
     }
 
+    /// Where the session is.
     pub fn phase(&self) -> Phase {
         self.phase
     }
 
+    /// Unacked batches allowed on this stream.
     pub fn max_in_flight(&self) -> u32 {
         self.max_in_flight
     }
 
+    /// Batches sent and not yet acked.
     pub fn outstanding_len(&self) -> usize {
         self.outstanding.len()
     }
 
+    /// True when the session is active and below its in-flight limit.
     pub fn can_assign(&self) -> bool {
         self.phase == Phase::Active && (self.outstanding.len() as u32) < self.max_in_flight
     }
 
+    /// Record a batch sent to the client.
     pub fn note_assigned(&mut self, batch_id: u64) {
         self.outstanding.insert(batch_id);
     }
 
+    /// Close the session.
     pub fn close(&mut self) {
         self.phase = Phase::Closed;
     }
 
+    /// Handle one client frame. A frame that breaks the protocol closes the session with an error frame.
     pub fn on_frame(&mut self, env: &Envelope) -> Step {
         if self.phase == Phase::Closed {
             return close_step(BAD_STATE, "session closed");

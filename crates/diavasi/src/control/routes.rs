@@ -8,19 +8,22 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use tower_http::limit::RequestBodyLimitLayer;
 
-use super::auth::{BearerTokenAuth, require_bearer};
+use super::auth::{AuthValidator, require_bearer};
 use super::dto::{ConnectionCreateRequest, GroupCreateRequest};
 use super::error::ControlResult;
 use super::service::{ControlService, MAX_CONFIG_JSON_BYTES, MAX_SECRET_BYTES};
 
 const BODY_LIMIT: usize = MAX_CONFIG_JSON_BYTES + MAX_SECRET_BYTES + 8 * 1024;
 
+/// Shared state of the HTTP handlers.
 #[derive(Clone)]
 pub struct AppState {
     pub service: Arc<ControlService>,
-    pub auth: BearerTokenAuth,
+    /// Checks the bearer token on every route except `/health` and `/ready`.
+    pub auth: Arc<dyn AuthValidator>,
 }
 
+/// The control-plane routes. `docs/api.md` describes each one.
 pub fn router(state: AppState) -> Router {
     let authed = Router::new()
         .route("/v1/status", get(status))
@@ -42,9 +45,10 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/groups/{id}/consumers", get(list_consumers))
         .route("/v1/groups/{id}/checkpoint", get(checkpoint))
         .route("/v1/groups/{id}/diagnostics", get(diagnostics))
+        .route("/v1/store/backup", post(backup))
         .layer(middleware::from_fn_with_state(
-            state.auth.clone(),
-            require_bearer::<BearerTokenAuth>,
+            Arc::clone(&state.auth),
+            require_bearer,
         ));
 
     Router::new()
@@ -166,6 +170,13 @@ async fn checkpoint(
     Path(id): Path<String>,
 ) -> ControlResult<Json<super::dto::CheckpointView>> {
     Ok(Json(state.service.checkpoint(&id).await?))
+}
+
+async fn backup(
+    State(state): State<AppState>,
+    Json(req): Json<super::dto::BackupRequest>,
+) -> ControlResult<Json<super::dto::BackupView>> {
+    Ok(Json(state.service.backup(req)?))
 }
 
 async fn diagnostics(

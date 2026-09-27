@@ -6,7 +6,7 @@ Related code: `crates/diavasi-adapter-redis/`. Decision: [ADR 0010](../adr/0010-
 
 ## 1. What Stage 9 is
 
-`diavasi serve` installs a router. A group whose connection kind is `redis` must carry `source_spec`. The owner task runs `XGROUP SETID` to the committed stream id, then `XREADGROUP`, and `GroupEngine::ingest` pushes the page into the same buffer a Postgres or MongoDB group uses. Ack and checkpoint are unchanged.
+`diavasi serve` installs a router. A group whose connection kind is `redis` must carry `source_spec`. The owner task reads the page after the committed stream id with `XRANGE`, and `GroupEngine::ingest` pushes it into the same buffer a Postgres or MongoDB group uses. Ack and checkpoint are unchanged.
 
 A group with no `connection_id` stays synthetic. A connection kind the router does not know fails at create.
 
@@ -56,14 +56,14 @@ diavasi group create \
   --group-id events \
   --connection-id redis \
   --ordering-contract redis-stream \
-  --source-json '{"stream":"events","group":"diavasi-events"}'
+  --source-json '{"stream":"events"}'
 
 diavasi group start events
 ```
 
-No `username` means the driver does not authenticate. The control plane still requires a non-empty secret, and that value is not sent to Redis. Set `username` when the server checks credentials; the secret is then the password.
+No `user` means the driver does not authenticate. The control plane still requires a non-empty secret, and that value is not sent to Redis. Set `user` when the server checks credentials; the secret is then the password.
 
-`group` is the Redis consumer-group name. It is not the Diavasi group id. A second Diavasi group on `events` needs a different Redis group name, because each read calls `XGROUP SETID` on that name.
+The spec names only the stream. A second Diavasi group can read `events` with the same spec. Reads do not create a Redis consumer group.
 
 Create connects and checks that `events` is a stream. A missing key fails. The adapter does not create the stream.
 

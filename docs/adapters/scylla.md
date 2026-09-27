@@ -16,7 +16,7 @@ Delivery stays at-least-once. Unacked rows are read again after a crash. The dat
 - `scan` set to `token` walks the ring in token order. It replaces `partition`. One sequential walk, not a split of the ring.
 - Clustering order is the table order. Descending columns are stored with an invertible complement so the engine still sees a strictly increasing tuple. The CQL comparison uses the original value.
 - Omitting `columns` sends every column. `columns` is an inclusion list. Primary-key columns are always included.
-- When `username` is set, the sealed secret is the password. When `username` is omitted, the client does not authenticate. `tls` is `disable` or `require`. `port` defaults to `9042`.
+- When `user` is set, the sealed secret is the password (`username` is accepted from older connections). When it is omitted, the client does not authenticate. `tls` is `disable` or `require`. `port` defaults to `9042`.
 - Key columns are integers, timestamps, dates, booleans, text, blobs, or uuids. `double`, `decimal`, collections, and user types are not key columns.
 
 ## Limitation

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted. Frozen in Stage 5.
+Accepted. Frozen in v0.5.0.
 
 ## Context
 

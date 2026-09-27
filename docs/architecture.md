@@ -1,4 +1,4 @@
-# Diavasi architecture (implemented behavior only where marked)
+# Diavasi architecture
 
 ## Purpose
 
@@ -79,7 +79,13 @@ Elixir, Rust, Python, Go, JavaScript, Java, C#, C, and Zig are thin clients of `
 
 ## Resource model (Stage 7)
 
-An idle running group is one owner task, a fetch ticker, a timeout ticker, and, for Postgres, one connection, with an empty buffer. An active group adds the configured buffer and the in-flight batches on each stream. Consumers per group, groups per process, and fetch-error restarts are unbounded on purpose. See [docs/resource-model.md](resource-model.md).
+An idle running group is one owner task, a fetch ticker, a timeout ticker, and, for an adapter, one fetch task and one connection, with an empty buffer. It reads its source about once a second. An active group adds the configured buffer and the in-flight batches on each stream. Consumers per group, groups per process, and transient-error restarts are unbounded on purpose; restarts back off from 250 ms to 30 s. See [docs/resource-model.md](resource-model.md).
+
+## Reference
+
+- [docs/api.md](api.md): the HTTP API.
+- [docs/operations.md](operations.md): lifecycle, stop reasons, restarts, limits, security, backup.
+- The crate docs (`cargo doc --open -p diavasi`): every public type, with examples.
 
 ## Non-goals (initial releases)
 

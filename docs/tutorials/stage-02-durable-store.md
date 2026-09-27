@@ -8,9 +8,9 @@ Related code: `crates/diavasi/src/store/`. Decision record: [ADR 0003](../adr/00
 
 Stage 2 adds a **durable metadata store** and a thin wrapper around `GroupEngine`:
 
-- `StateStore` — narrow trait for connections, groups, checkpoints
-- `RedbStore` — redb implementation (pure Rust, ACID)
-- `DurableGroup` — engine + store; persists when the **committed** cursor advances
+- `StateStore`: the persistence trait for connections, groups, and checkpoints.
+- `RedbStore`: the redb implementation (pure Rust, ACID transactions).
+- `DurableGroup`: an engine with a store. It writes when the committed cursor advances.
 - Crash-injection hooks for recovery tests
 
 Still absent: Tokio group runtime (Stage 3), HTTP/CLI lifecycle (Stage 4), production data plane (Stage 5), real DB adapters.

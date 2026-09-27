@@ -7,21 +7,35 @@ use redis::aio::ConnectionManagerConfig;
 /// How to reach one Redis server. The sealed secret is the password when `username` is set.
 #[derive(Clone, Debug)]
 pub struct RedisEndpoint {
+    /// Server host.
     pub host: String,
+    /// Server port. Default 6379.
     pub port: u16,
+    /// Database number. Default 0.
     pub db: i64,
+    /// User to authenticate as (`user` in `config_json`). `None` does not authenticate.
     pub username: Option<String>,
+    /// Password, when a user is set.
     pub password: Option<String>,
+    /// Connect with TLS.
     pub tls: bool,
+    /// How long to wait to connect.
     pub connect_timeout: Duration,
+    /// How long to wait for a reply.
     pub response_timeout: Duration,
     /// `None` keeps the client default. `Some(0)` tries once.
     pub retries: Option<usize>,
 }
 
 impl RedisEndpoint {
+    /// The endpoint of a stored connection. Unknown `config_json` keys are an error.
     pub fn from_request(request: &SourceOpen) -> Result<Self, String> {
         let cfg = &request.connection.config_json;
+        diavasi::runtime::check_keys(
+            cfg,
+            &["host", "port", "db", "user", "username", "tls"],
+            "config_json",
+        )?;
         let host = cfg
             .get("host")
             .and_then(|value| value.as_str())
@@ -46,8 +60,11 @@ impl RedisEndpoint {
             "require" => true,
             other => return Err(format!("tls {other} is not supported")),
         };
+        // `user` is the name every adapter uses; `username` is accepted from
+        // connections created before v0.13.
         let username = cfg
-            .get("username")
+            .get("user")
+            .or_else(|| cfg.get("username"))
             .and_then(|value| value.as_str())
             .filter(|user| !user.is_empty())
             .map(str::to_string);
@@ -72,6 +89,14 @@ impl RedisEndpoint {
         })
     }
 
+    /// The endpoint of a `redis://` or `rediss://` URL.
+    ///
+    /// ```
+    /// use diavasi_adapter_redis::connect::RedisEndpoint;
+    /// let endpoint = RedisEndpoint::from_url("redis://127.0.0.1:6380/2")?;
+    /// assert_eq!((endpoint.port, endpoint.db), (6380, 2));
+    /// # Ok::<(), String>(())
+    /// ```
     pub fn from_url(url: &str) -> Result<Self, String> {
         let (tls, rest) = if let Some(rest) = url.strip_prefix("rediss://") {
             (true, rest)
@@ -131,6 +156,7 @@ impl RedisEndpoint {
         })
     }
 
+    /// The `config_json` of a connection to this endpoint, without the password.
     pub fn config_json(&self) -> serde_json::Value {
         let mut json = serde_json::json!({
             "host": self.host,
@@ -139,15 +165,17 @@ impl RedisEndpoint {
             "tls": if self.tls { "require" } else { "disable" },
         });
         if let Some(username) = &self.username {
-            json["username"] = serde_json::Value::String(username.clone());
+            json["user"] = serde_json::Value::String(username.clone());
         }
         json
     }
 
+    /// The password, or an empty string.
     pub fn secret(&self) -> String {
         self.password.clone().unwrap_or_default()
     }
 
+    /// The endpoint as a URL the redis client accepts.
     pub fn redis_url(&self) -> String {
         let scheme = if self.tls { "rediss" } else { "redis" };
         let host = if self.host.contains(':') && !self.host.starts_with('[') {
@@ -167,6 +195,7 @@ impl RedisEndpoint {
     }
 }
 
+/// A connection that reconnects by itself.
 pub async fn connect(endpoint: &RedisEndpoint) -> Result<ConnectionManager, String> {
     let client = redis::Client::open(endpoint.redis_url()).map_err(|err| err.to_string())?;
     let mut config = ConnectionManagerConfig::new()

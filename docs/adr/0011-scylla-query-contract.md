@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted for Stage 10 onward.
+Accepted in v0.10.0.
 
 ## Context
 
@@ -33,7 +33,7 @@ Ordering:
 
 Payload JSON: integers and timestamps are numbers, booleans are booleans, text is a string, uuid is canonical text, and blob is base64.
 
-Connection `config_json` is `host`, `port` (default `9042`), optional `keyspace`, optional `username`, and `tls` (`disable` or `require`). When `username` is set, the sealed secret is the password. When `username` is omitted, the driver does not authenticate. The control plane still requires a non-empty secret; that value is not sent to ScyllaDB. Tests use `SCYLLA_URL=127.0.0.1:9042`.
+Connection `config_json` is `host`, `port` (default `9042`), optional `keyspace`, optional `user` (`username` is accepted from older connections), and `tls` (`disable` or `require`). Keys other than these are rejected, so a misspelled key fails at group create instead of being ignored. When `user` is set, the sealed secret is the password. When it is omitted, the driver does not authenticate. The control plane still requires a non-empty secret; that value is not sent to ScyllaDB. Tests use `SCYLLA_URL=127.0.0.1:9042`.
 
 `fetch_after` does not keep paging state. Each call runs a prepared `SELECT` with `LIMIT` equal to the batch.
 

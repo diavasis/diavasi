@@ -15,9 +15,9 @@ Stage 12 makes a running server explainable. The control plane already had liven
 
 ## Metrics
 
-Names use a `diavasi_` prefix. Counters move when the event happens. Gauges are filled when `/metrics` is scraped, from groups whose runtime is up. A paused group disappears from the gauge series. Its counters stay until the process exits.
+Names use a `diavasi_` prefix. Counters move when the event happens. Gauges are filled when `/metrics` is scraped, from groups whose runtime is up. A paused group disappears from the gauge series. Its counters stay until the process exits or the group is deleted.
 
-Labels `group_id` and `adapter` are on the record counters. `adapter` is `synthetic` when the group has no connection, otherwise the connection kind (`postgres`, `mongodb`, `redis`, `scylla`). `consumer_id` is only on disconnects.
+Labels `group_id` and `adapter` are on the record counters. `adapter` is `synthetic` when the group has no connection, otherwise the connection kind (`postgres`, `mongodb`, `redis`, `scylla`). No metric carries a consumer id; clients choose those, so they appear in logs instead. Deleting a group removes its series.
 
 | Metric | Kind | Labels |
 | --- | --- | --- |
@@ -36,12 +36,17 @@ Labels `group_id` and `adapter` are on the record counters. `adapter` is `synthe
 | `diavasi_group_ack_latency_seconds` | histogram | `group_id`, `adapter` |
 | `diavasi_checkpoint_write_latency_seconds` | histogram | `group_id` |
 | `diavasi_group_restarts_total` | counter | `group_id` |
-| `diavasi_consumer_disconnects_total` | counter | `group_id`, `consumer_id` |
+| `diavasi_group_recovery_failures_total` | counter | `group_id` |
+| `diavasi_consumer_disconnects_total` | counter | `group_id` |
+| `diavasi_group_stale_acks_total` | counter | `group_id` |
+| `diavasi_group_contract_failures_total` | counter | `group_id` |
 | `diavasi_adapter_errors_total` | counter | `group_id`, `adapter` |
 
 `diavasi_group_checkpoint_lag` is records sitting in the buffer plus records assigned to a consumer and not yet acked. It is not a distance between cursor tuples. A slow consumer grows this number until the buffer cap stops further fetches. The buffer gauge stays at or under `max_buffer_records`. In-flight records sit outside that cap, bounded by the batches already assigned.
 
-`diavasi_group_restarts_total` counts supervisor respawns after an unexpected task exit (source error, abort, panic). A pause does not increment it.
+`diavasi_group_restarts_total` counts successful supervisor respawns after an unexpected task exit (transient source error, abort, panic). A pause does not increment it. `diavasi_group_recovery_failures_total` counts restarts that could not open the source; each is retried with a longer delay, from 250 ms up to 30 s.
+
+`diavasi_group_contract_failures_total` counts groups stopped as `Failed` because the data broke the source contract. These are not restarted, so alert on any increase: the group stays stopped until an operator fixes the data or the spec and starts it.
 
 ## Diagnostics
 
@@ -52,7 +57,7 @@ diavasi --output json group diagnostics demo
 
 The JSON object has:
 
-- `running` and `lifecycle`
+- `running` and `lifecycle`. They agree: a running group is `Running` or `Draining`; a group waiting to restart after a failure is `Recovering` with `running` false; a stopped group is `Stopped`, or `Failed` after an error a restart would repeat.
 - `committed_cursor` (live engine while running, otherwise the store)
 - `fetched_cursor` (live read position; null when the runtime is down, and null at the start of a stream)
 - `buffer_records`, `buffer_bytes`, `inflight_records`, `consumers`
@@ -60,7 +65,7 @@ The JSON object has:
 - `checkpoint_lag`, `restarts`, `consumer_disconnects`, `adapter_errors`
 - `last_stop_reason` and `recovered`
 
-`last_stop_reason` is `paused` after a clean pause, the source error text after a failed read, `task aborted` after an abort, or `task panicked` after a panic. `recovered` is true after the supervisor respawns that group in this process. Both are forgotten when the process exits. The checkpoint in the store is the durable position.
+`last_stop_reason` is `paused` after a clean pause, `drained` after a drain finished, `shutdown` after a server shutdown, the source error text after a failed read or a failed restart, `task aborted` after an abort, or `task panicked` after a panic. A transient error is retried with backoff and `running` is false until a restart succeeds. A contract error (bad data, such as a value of the wrong type or entries trimmed before delivery) is not retried: the group stays stopped with that reason until `group start`. `recovered` is true after the supervisor respawns that group in this process. Both are forgotten when the process exits. The checkpoint in the store is the durable position.
 
 An explicit `group start` or `group resume` clears `recovered` for that group. The previous reason remains until the next exit.
 
@@ -100,7 +105,7 @@ In the screenshot, `trades` has fetched 1024 records into a full buffer, nothing
 | `j` / `k` | Move the selection down or up. Arrow keys do the same. |
 | `s` | Start the selected group. |
 | `p` | Pause it (the runtime stops, the definition stays). |
-| `d` | Drain it. |
+| `d` | Drain it: deliver what is already fetched, read nothing new, then stop. |
 | `r` | Refresh now. |
 | `q` | Quit. Esc and Ctrl-C also quit. |
 
@@ -118,5 +123,7 @@ DIAVASI_LOG_FORMAT=json diavasi serve --bind 127.0.0.1:7700 --data-bind 127.0.0.
 `DIAVASI_LOG_FORMAT=text` is the default. Any other value is rejected with a line on stderr and the text formatter is used.
 
 Fetch failures, ack failures, restarts, and consumer disconnects include `group_id`. Disconnects and data-plane ack failures also include `consumer_id`.
+
+`diavasi_group_stale_acks_total` counts acks for batches that were no longer in flight, usually because the batch timed out and was delivered again. A rising count means consumers take longer than `batch_timeout_ms`.
 
 Fetch and ack use debug spans named `group_fetch` and `group_ack`. The default `info` filter does not enable them. `RUST_LOG=debug` prints them. There is no trace exporter in this stage.

@@ -63,12 +63,44 @@ impl SourceFactory for RoutingFactory {
 mod tests {
     use super::*;
 
+    fn request(kind: &str) -> SourceOpen {
+        SourceOpen {
+            connection: diavasi::store::ConnectionRecord {
+                id: "c".into(),
+                kind: kind.into(),
+                config_json: serde_json::json!({}),
+                sealed_secret: diavasi::store::SealedSecret {
+                    nonce: Vec::new(),
+                    ciphertext: Vec::new(),
+                },
+            },
+            source_spec: serde_json::json!({}),
+            secret: Vec::new(),
+        }
+    }
+
     #[test]
     fn routes_postgres_mongodb_redis_and_scylla() {
         let factory = RoutingFactory::installed();
-        assert!(factory.supports("postgres"));
-        assert!(factory.supports("mongodb"));
-        assert!(factory.supports("redis"));
-        assert!(factory.supports("scylla"));
+        for kind in ["postgres", "mongodb", "redis", "scylla"] {
+            assert!(factory.supports(kind), "{kind}");
+        }
+        assert!(!factory.supports("kafka"));
+    }
+
+    /// Each kind reaches its own adapter: the adapter's spec check answers,
+    /// not the router's "unsupported" error.
+    #[tokio::test]
+    async fn validate_reaches_the_adapter_for_each_kind() {
+        let factory = RoutingFactory::installed();
+        for kind in ["postgres", "mongodb", "redis", "scylla"] {
+            let err = factory.validate(request(kind)).await.unwrap_err();
+            assert!(
+                !err.contains("unsupported connection kind"),
+                "{kind}: {err}"
+            );
+        }
+        let err = factory.validate(request("kafka")).await.unwrap_err();
+        assert!(err.contains("unsupported connection kind kafka"), "{err}");
     }
 }

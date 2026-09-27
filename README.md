@@ -96,10 +96,14 @@ diavasi serve \
 | `--data-bind` |                     | Data plane, TLS gRPC. Default `127.0.0.1:7710`.                           |
 | `--store`     |                     | redb file. The data-plane CA is written next to it as `dataplane-ca.crt`. |
 | `--token`     | `DIAVASI_API_TOKEN` | Bearer token for `/v1` and for `DataPlane.Consume`.                       |
-| `--store-key` | `DIAVASI_STORE_KEY` | 32-byte hex key for secrets in the store.                                 |
+| `--store-key` | `DIAVASI_STORE_KEY` | 32-byte hex key for secrets in the store. Required once the store holds a connection. |
+| `--tls-cert`, `--tls-key` | | Data-plane certificate and key. Both or neither. When omitted, a local CA and certificate are generated next to the store. |
+| `--tls-san` | | Extra DNS name or IP for the generated data-plane certificate, besides `localhost` and `127.0.0.1`. Repeatable. |
+| `--http-tls-cert`, `--http-tls-key` | | Control-plane certificate and key. Both or neither. When set, the control plane serves HTTPS. |
+| `--checkpoint-interval-ms` | `DIAVASI_CHECKPOINT_INTERVAL_MS` | 0 writes each ack's checkpoint before answering it. A larger value writes at most once per interval; a crash can replay up to one interval of acked records. |
 
 
-`GET /health` and `GET /ready` need no token. Every `/v1` route and `GET /metrics` require `Authorization: Bearer <token>`.
+`GET /health` and `GET /ready` need no token. Every `/v1` route and `GET /metrics` require `Authorization: Bearer <token>`. Every route, body, and status code is in [docs/api.md](docs/api.md). Limits, security, restarts, and what to do when a group stops are in [docs/operations.md](docs/operations.md).
 
 ### Running
 
@@ -119,9 +123,11 @@ diavasi group pause demo
 diavasi group delete demo
 ```
 
+`drain` delivers what the group has already read, reads nothing new, and stops the group when those records are acked. `pause` stops it at once; unacked batches are delivered again on the next start. SIGINT or SIGTERM stops the server cleanly: each group saves its progress, and groups that were running start again with the server.
+
 `--output json` prints machine-readable responses.
 
-`diavasi test` inserts rows, starts a temporary server, consumes them, and drops the object when it finishes. Compose does not preload data, so `-n` and `-b` choose the size.
+`diavasi test` creates a table, collection, or stream named `diavasi_test_<pid>`, inserts rows, starts a temporary server, consumes them, and drops that object when it finishes (`--keep` leaves it). Compose does not preload data, so `-n` and `-b` choose the size.
 
 ```bash
 diavasi test postgres -n 10000 -b 1024
@@ -148,7 +154,7 @@ diavasi tui
 
 ### Coding consumers
 
-A consumer opens `DataPlane.Consume`, sends `Hello` version 1, joins a group, and yields batches. The caller acks by `batch_id`. The client stores no cursor and does not dedupe on `record_id`, because that field is 0 for Redis and for some Scylla keys. Dropping the stream is how unacked batches return. Reconnect with the same consumer id and the server replays them.
+A consumer opens `DataPlane.Consume`, sends `Hello` version 1, joins a group, and yields batches. The caller acks by `batch_id`. The client stores no cursor and does not dedupe on `record_id`, because that field is 0 for Redis and for some Scylla keys. Dropping the stream is how unacked batches return. Reconnect with the same consumer id and the server replays them. If the old stream is still open, the new one takes it over: the old stream receives error 2 and closes.
 
 - [Python](https://github.com/diavasis/diavasi-python) 0.1.0, `pip install diavasi-data==0.1.0`
 - [Elixir](https://github.com/diavasis/diavasi-elixir) 0.1.0, Hex `{:diavasi, "~> 0.1.0"}`
@@ -195,7 +201,7 @@ Language, install, and the Compose profile for each SDK are in [clients/README.m
 | v0.3.0        | Supervised per-group Tokio runtime                                                                              | Done    |
 | v0.4.0        | HTTP control plane + CLI                                                                                        | Done    |
 | v0.5.0        | Protocol v1 data plane (TLS gRPC, auth, backpressure)                                                           | Done    |
-| v0.5.0/Demo   | Livebook: server, synthetic group, Python and Elixir clients ([notebook](https://github.com/diavasis/diavasi-elixir/blob/main/notebooks/demo.livemd)) | Next    |
+| v0.5.0/Demo   | Livebook: server, synthetic group, Python and Elixir clients ([notebook](https://github.com/diavasis/diavasi-elixir/blob/main/notebooks/demo.livemd)) | Done    |
 | v0.6.0        | PostgreSQL adapter. After it lands, Docker Compose replaces the synthetic source                                | Done    |
 | v0.7.0        | End-to-end Postgres benchmarks / resource model                                                                 | Done    |
 | v0.8.0        | MongoDB adapter. Object `_id` or a declared sort; resume is a `find` keyset                                     | Done    |
@@ -208,7 +214,7 @@ Language, install, and the Compose profile for each SDK are in [clients/README.m
 | v0.15.0       | Tauri 2 app on the same HTTP API                                                                                | Planned |
 
 
-Stage tutorials and reviews live under `[docs/](docs/)`.
+Stage tutorials and reviews live under [docs/](docs/).
 
 ## Developing Diavasi
 

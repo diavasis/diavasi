@@ -13,12 +13,28 @@ Delivery stays at-least-once. Unacked documents are read again after a crash. Th
 ## Assumption
 
 - The sort is a total order. Each sort field is non-null and matches its declared BSON type: `objectId`, `int32`, `int64`, `string`, `date`, `bool`, or `binData`. Direction is `asc` or `desc`.
-- A unique index covers those fields in that order and those directions, unless the operator sets `acknowledge_unsafe`. The built-in `_id_` index covers `_id` ascending.
+- The sort starts with every field of a unique index, in key order, unless the operator sets `acknowledge_unsafe`. With a unique index on `{a: 1, b: 1}`, sorting by `a` alone is rejected. The built-in `_id_` index covers a sort that starts with `_id`.
 - Producers insert new keys ahead of the cursor, or accept that keys behind the cursor are invisible.
 - Omitting `order_by` means `_id` ascending.
 - Omitting `fields` sends the whole document. `fields` is an inclusion list; sort fields are included with it.
 - `filter` is a query object. `$where` and `$function` are rejected.
 - When `user` is set, the sealed secret is the password. When `user` is omitted, the client does not authenticate. `tls` is `disable` or `require`.
+
+## Connection
+
+`config_json` names one server with `host` and `port` (default 27017), or a replica set, several `mongos` routers, or a DNS seed list with `uri`. Not both.
+
+| Key | Rule |
+| --- | --- |
+| `host`, `port` | One server, connected to directly. |
+| `uri` | `mongodb://a:27017,b:27017/?replicaSet=rs0` or `mongodb+srv://cluster0.example.net`. The driver discovers the topology and follows the primary. It must not hold a user or password; set `user` and put the password in the secret. Other options in the string (`replicaSet`, `readPreference`, `tlsCAFile`, ...) apply. |
+| `database` | Required. The database that holds the collection. |
+| `user`, `auth_source` | Optional. `auth_source` defaults to `admin`. |
+| `tls` | `disable` or `require`. With `host`, omitted means `disable`. With `uri`, omitted leaves TLS to the string: on for `mongodb+srv://` and for `tls=true`. |
+
+```json
+{"uri": "mongodb+srv://cluster0.example.net/?retryWrites=false", "database": "app", "user": "diavasi"}
+```
 
 ## Limitation
 

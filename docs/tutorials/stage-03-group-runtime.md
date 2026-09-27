@@ -8,9 +8,9 @@ Related code: `crates/diavasi/src/runtime/`. Decision record: [ADR 0004](../adr/
 
 Stage 3 wraps Stage 2 `DurableGroup` in a supervised async runtime:
 
-- `GroupSupervisor` — starts/stops many groups; recovers unexpected exits
-- `GroupRuntime` — one owner task per group + fetch/timeout children
-- `GroupHandle` — in-process client (join / assign / ack)
+- `GroupSupervisor`: starts and stops groups, and restarts a group that fails.
+- `GroupRuntime`: one owner task per group, with a fetch task and two tickers.
+- `GroupHandle`: the in-process client (join, assign, ack).
 
 Still absent: HTTP/CLI (Stage 4), production gRPC data plane (Stage 5), real DB adapters.
 
@@ -98,7 +98,7 @@ cargo test -p diavasi --lib runtime::
 | `killed_group_recovers` | Respawn resumes at durable cursor |
 | `repeated_kill_recover_soak` | Multiple kills; full drain; no omissions |
 | `backpressure_under_runtime` | Buffer fills to cap; fetch stalls |
-| `caps_hold_while_draining` | Caps hold under load |
+| `caps_hold_while_consuming` | Buffer caps hold while a consumer drains the source |
 | `stop_group_no_respawn` | Clean stop does not respawn |
 
 ## 6. Misconceptions

@@ -8,6 +8,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 use super::error::{StoreError, StoreResult};
 use super::types::SealedSecret;
 
+/// Environment variable that holds the store key as 64 hex characters.
 pub const MASTER_KEY_ENV: &str = "DIAVASI_STORE_KEY";
 pub const KEY_LEN: usize = 32;
 pub const NONCE_LEN: usize = 12;
@@ -17,24 +18,42 @@ pub const NONCE_LEN: usize = 12;
 pub struct StoreKey([u8; KEY_LEN]);
 
 impl StoreKey {
+    /// A key from raw bytes.
     pub fn from_bytes(bytes: [u8; KEY_LEN]) -> Self {
         Self(bytes)
     }
 
+    /// A random key. Secrets sealed with it are unreadable once the process exits, unless the key is saved.
     pub fn generate() -> Self {
         let mut bytes = [0u8; KEY_LEN];
         rand::thread_rng().fill_bytes(&mut bytes);
         Self(bytes)
     }
 
-    /// Parse 64-character hex from `DIAVASI_STORE_KEY`, or generate ephemeral.
-    pub fn from_env_or_generate() -> StoreResult<Self> {
-        match std::env::var(MASTER_KEY_ENV) {
-            Ok(hex_key) => Self::from_hex(&hex_key),
-            Err(_) => Ok(Self::generate()),
+    /// Parse the key from `DIAVASI_STORE_KEY` (64 hex characters). `Ok(None)`
+    /// when the variable is unset or empty.
+    pub fn from_env() -> StoreResult<Option<Self>> {
+        Self::from_env_value(std::env::var(MASTER_KEY_ENV).ok().as_deref())
+    }
+
+    /// [`Self::from_env`] without reading the process environment.
+    pub fn from_env_value(value: Option<&str>) -> StoreResult<Option<Self>> {
+        match value.map(str::trim).filter(|value| !value.is_empty()) {
+            Some(hex_key) => Self::from_hex(hex_key).map(Some),
+            None => Ok(None),
         }
     }
 
+    /// A key from 64 hex characters. Surrounding whitespace is ignored.
+    ///
+    /// ```
+    /// use diavasi::store::{StoreKey, open_secret, seal_secret};
+    /// let key = StoreKey::from_hex(&"00".repeat(32))?;
+    /// let sealed = seal_secret(&key, b"s3cret")?;
+    /// assert_eq!(open_secret(&key, &sealed)?, b"s3cret");
+    /// assert!(open_secret(&StoreKey::generate(), &sealed).is_err());
+    /// # Ok::<(), diavasi::store::StoreError>(())
+    /// ```
     pub fn from_hex(hex_key: &str) -> StoreResult<Self> {
         let bytes = hex::decode(hex_key.trim())
             .map_err(|e| StoreError::Crypto(format!("invalid hex key: {e}")))?;
@@ -50,10 +69,12 @@ impl StoreKey {
         Ok(Self(arr))
     }
 
+    /// The raw key bytes.
     pub fn as_bytes(&self) -> &[u8; KEY_LEN] {
         &self.0
     }
 
+    /// The key as 64 hex characters, the form `DIAVASI_STORE_KEY` takes.
     pub fn to_hex(&self) -> String {
         hex::encode(self.0)
     }
@@ -145,19 +166,14 @@ mod tests {
     }
 
     #[test]
-    fn from_env_or_generate_reads_env() {
+    fn from_env_value_parses_or_reports_absence() {
         let key = StoreKey::generate();
-        let hex = key.to_hex();
-        // SAFETY: test-only; single-threaded unit test mutates process env briefly.
-        unsafe {
-            std::env::set_var(MASTER_KEY_ENV, &hex);
-        }
-        let loaded = StoreKey::from_env_or_generate().unwrap();
+        let loaded = StoreKey::from_env_value(Some(&key.to_hex()))
+            .unwrap()
+            .unwrap();
         assert_eq!(loaded.as_bytes(), key.as_bytes());
-        unsafe {
-            std::env::remove_var(MASTER_KEY_ENV);
-        }
-        let ephemeral = StoreKey::from_env_or_generate().unwrap();
-        assert_eq!(ephemeral.as_bytes().len(), KEY_LEN);
+        assert!(StoreKey::from_env_value(None).unwrap().is_none());
+        assert!(StoreKey::from_env_value(Some("  ")).unwrap().is_none());
+        assert!(StoreKey::from_env_value(Some("abcd")).is_err());
     }
 }

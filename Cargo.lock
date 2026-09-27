@@ -985,10 +985,12 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "serde_path_to_error",
  "sysinfo",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
+ "tokio-rustls",
  "tokio-stream",
  "tokio-util",
  "tonic",
@@ -1009,6 +1011,7 @@ dependencies = [
  "diavasi",
  "futures",
  "mongodb",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
@@ -1020,18 +1023,17 @@ name = "diavasi-adapter-postgres"
 version = "0.12.0"
 dependencies = [
  "bytes",
- "clap",
  "diavasi",
  "futures",
- "reqwest",
+ "hex",
  "rustls",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
  "tokio-postgres",
  "tokio-postgres-rustls",
  "tracing",
- "tracing-subscriber",
  "webpki-roots 0.26.11",
 ]
 
@@ -1043,6 +1045,7 @@ dependencies = [
  "diavasi",
  "futures",
  "redis",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
@@ -1053,17 +1056,34 @@ dependencies = [
 name = "diavasi-adapter-scylla"
 version = "0.12.0"
 dependencies = [
+ "base64",
  "bytes",
  "diavasi",
  "futures",
  "rustls",
  "scylla",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
  "tracing",
  "uuid",
  "webpki-roots 0.26.11",
+]
+
+[[package]]
+name = "diavasi-bench"
+version = "0.12.0"
+dependencies = [
+ "clap",
+ "diavasi",
+ "diavasi-adapter-postgres",
+ "reqwest",
+ "rustls",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

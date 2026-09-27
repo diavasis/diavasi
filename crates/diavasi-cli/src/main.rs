@@ -2,8 +2,10 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand, ValueEnum};
-use diavasi::control::{API_TOKEN_ENV, ServeConfig, serve};
+use clap::{Args, Parser, Subcommand, ValueEnum};
+use diavasi::control::{
+    API_TOKEN_ENV, BackupRequest, ConnectionCreateRequest, GroupCreateRequest, ServeConfig, serve,
+};
 use diavasi::store::StoreKey;
 
 #[derive(Parser, Debug)]
@@ -19,7 +21,7 @@ struct Cli {
     url: String,
 
     /// Bearer token (client commands).
-    #[arg(long, global = true, env = "DIAVASI_API_TOKEN")]
+    #[arg(long, global = true, env = "DIAVASI_API_TOKEN", hide_env_values = true)]
     token: Option<String>,
 
     /// Output format.
@@ -47,13 +49,13 @@ enum AdapterName {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Run the local control-plane HTTP server.
+    /// Run the server: the control plane (HTTP) and the data plane (TLS gRPC).
     Serve {
         #[arg(long, default_value = "127.0.0.1:7700")]
         bind: SocketAddr,
         #[arg(long)]
         store: PathBuf,
-        #[arg(long, env = "DIAVASI_API_TOKEN")]
+        #[arg(long, env = "DIAVASI_API_TOKEN", hide_env_values = true)]
         token: String,
         /// Optional 64-char hex store master key (else DIAVASI_STORE_KEY / ephemeral).
         #[arg(long)]
@@ -67,10 +69,29 @@ enum Commands {
         /// PEM private key for the data plane.
         #[arg(long)]
         tls_key: Option<PathBuf>,
+        /// Extra DNS name or IP address for the generated data-plane
+        /// certificate, besides localhost and 127.0.0.1. Repeat for several.
+        #[arg(long = "tls-san")]
+        tls_san: Vec<String>,
+        /// PEM certificate for the control plane. With --http-tls-key, the
+        /// control plane serves HTTPS.
+        #[arg(long)]
+        http_tls_cert: Option<PathBuf>,
+        /// PEM private key for the control plane.
+        #[arg(long)]
+        http_tls_key: Option<PathBuf>,
+        /// Write checkpoints at most once per this many milliseconds. 0 (the
+        /// default) writes before each ack is answered. A larger value raises
+        /// throughput; a crash can replay up to one interval of acked records.
+        #[arg(long, default_value_t = 0, env = "DIAVASI_CHECKPOINT_INTERVAL_MS")]
+        checkpoint_interval_ms: u64,
     },
     /// Print library version.
     Version,
     /// Seed Postgres, MongoDB, Redis, or ScyllaDB, then consume the rows and print throughput.
+    ///
+    /// Creates a table, collection, or stream named `diavasi_test_<pid>` in the
+    /// target database and drops it at the end unless `--keep` is set.
     Test {
         /// `postgres`, `mongo` / `mongodb`, `redis`, or `scylla`.
         adapter: AdapterName,
@@ -96,18 +117,82 @@ enum Commands {
         #[arg(long)]
         keep: bool,
     },
+    /// Commands that call a running server's control plane.
+    #[command(flatten)]
+    Remote(RemoteCmd),
+}
+
+/// Commands sent to the control plane at `--url` with `--token`.
+#[derive(Subcommand, Debug)]
+enum RemoteCmd {
     /// Server status.
     Status,
     /// Live dashboard of the control plane.
     Tui,
+    /// Add, list, show, and delete database connections.
     #[command(subcommand)]
     Connection(ConnectionCmd),
+    /// Create, run, and inspect groups.
     #[command(subcommand)]
     Group(GroupCmd),
+    /// List the consumers joined to a group.
     #[command(subcommand)]
     Consumer(ConsumerCmd),
+    /// Show a group's stored and live cursors.
     #[command(subcommand)]
     Checkpoint(CheckpointCmd),
+    /// Back up the metadata store.
+    #[command(subcommand)]
+    Store(StoreCmd),
+}
+
+/// Environment variable read for the connection secret when no secret flag
+/// is given.
+const SECRET_ENV: &str = "DIAVASI_CONNECTION_SECRET";
+
+/// Where the connection secret comes from. At most one flag; with none, the
+/// secret is read from `DIAVASI_CONNECTION_SECRET`.
+#[derive(Args, Debug)]
+#[group(multiple = false)]
+struct SecretSource {
+    /// The secret itself. Visible in the process list and shell history;
+    /// prefer --secret-file, --secret-stdin, or DIAVASI_CONNECTION_SECRET.
+    #[arg(long)]
+    secret: Option<String>,
+    /// Read the secret from this file. One trailing newline is removed.
+    #[arg(long)]
+    secret_file: Option<PathBuf>,
+    /// Read the secret from standard input. One trailing newline is removed.
+    #[arg(long)]
+    secret_stdin: bool,
+}
+
+impl SecretSource {
+    fn resolve(self) -> Result<String, String> {
+        let raw = if let Some(secret) = self.secret {
+            secret
+        } else if let Some(path) = self.secret_file {
+            std::fs::read_to_string(&path)
+                .map_err(|err| format!("reading {}: {err}", path.display()))?
+        } else if self.secret_stdin {
+            let mut buf = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)
+                .map_err(|err| format!("reading stdin: {err}"))?;
+            buf
+        } else {
+            std::env::var(SECRET_ENV).map_err(|_| {
+                format!("give --secret, --secret-file, --secret-stdin, or set {SECRET_ENV}")
+            })?
+        };
+        let secret = raw
+            .strip_suffix('\n')
+            .map(|rest| rest.strip_suffix('\r').unwrap_or(rest))
+            .unwrap_or(&raw);
+        if secret.is_empty() {
+            return Err("the secret is empty".into());
+        }
+        Ok(secret.to_string())
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -119,8 +204,8 @@ enum ConnectionCmd {
         kind: String,
         #[arg(long, default_value = "{}")]
         config_json: String,
-        #[arg(long)]
-        secret: String,
+        #[command(flatten)]
+        secret: SecretSource,
     },
     List,
     Show {
@@ -136,10 +221,12 @@ enum GroupCmd {
     Create {
         #[arg(long)]
         group_id: String,
-        #[arg(long, default_value_t = 100)]
-        total_records: u64,
-        #[arg(long, default_value_t = 64)]
-        payload_size: usize,
+        /// Synthetic groups only: records to generate (default 100).
+        #[arg(long, conflicts_with = "connection_id")]
+        total_records: Option<u64>,
+        /// Synthetic groups only: payload bytes per record (default 64).
+        #[arg(long, conflicts_with = "connection_id")]
+        payload_size: Option<usize>,
         #[arg(long, default_value_t = 1024)]
         max_buffer_records: usize,
         #[arg(long, default_value_t = 1024 * 1024)]
@@ -148,11 +235,13 @@ enum GroupCmd {
         batch_max_records: usize,
         #[arg(long, default_value_t = 100)]
         batch_timeout_ms: u64,
-        #[arg(long, default_value = "synthetic-u64")]
-        ordering_contract: String,
+        /// A label stored with the group. Defaults to `synthetic-u64` or the
+        /// connection kind.
+        #[arg(long)]
+        ordering_contract: Option<String>,
         #[arg(long)]
         connection_id: Option<String>,
-        /// JSON source contract for a postgres connection.
+        /// The adapter source contract (`source_spec`) as JSON.
         #[arg(long)]
         source_json: Option<String>,
     },
@@ -190,6 +279,15 @@ enum CheckpointCmd {
     Show { group: String },
 }
 
+#[derive(Subcommand, Debug)]
+enum StoreCmd {
+    /// Copy the server's metadata store to a new file on the server host.
+    Backup {
+        /// Absolute path on the server host. Must not exist yet.
+        path: String,
+    },
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -217,6 +315,10 @@ async fn run(cli: Cli) -> Result<(), ExitCode> {
             data_bind,
             tls_cert,
             tls_key,
+            tls_san,
+            http_tls_cert,
+            http_tls_key,
+            checkpoint_interval_ms,
         } => {
             diavasi::observe::init_serve_tracing();
             let store_key = match store_key {
@@ -235,6 +337,10 @@ async fn run(cli: Cli) -> Result<(), ExitCode> {
                 tls_cert,
                 tls_key,
                 source_factory: Some(std::sync::Arc::new(sources::RoutingFactory::installed())),
+                checkpoint_interval: std::time::Duration::from_millis(checkpoint_interval_ms),
+                tls_san,
+                http_tls_cert,
+                http_tls_key,
             })
             .await
             {
@@ -267,7 +373,9 @@ async fn run(cli: Cli) -> Result<(), ExitCode> {
                 redis_url,
                 scylla_url,
                 keep,
-                object: "diavasi_test".into(),
+                // One name per run, so an object of the same name that
+                // someone else created is never dropped.
+                object: format!("diavasi_test_{}", std::process::id()),
                 json: matches!(cli.output, OutputFormat::Json),
             })
             .await
@@ -277,7 +385,7 @@ async fn run(cli: Cli) -> Result<(), ExitCode> {
             }
             Ok(())
         }
-        other => {
+        Commands::Remote(cmd) => {
             let token = cli.token.ok_or_else(|| {
                 eprintln!("error: --token or {API_TOKEN_ENV} required");
                 ExitCode::from(2)
@@ -288,7 +396,7 @@ async fn run(cli: Cli) -> Result<(), ExitCode> {
                 output: cli.output,
                 http: reqwest::Client::new(),
             };
-            client.dispatch(other).await
+            client.dispatch(cmd).await
         }
     }
 }
@@ -301,23 +409,23 @@ struct Client {
 }
 
 impl Client {
-    async fn dispatch(&self, cmd: Commands) -> Result<(), ExitCode> {
+    async fn dispatch(&self, cmd: RemoteCmd) -> Result<(), ExitCode> {
         match cmd {
-            Commands::Tui => tui::run(&self.base, &self.token).await,
-            Commands::Status => {
+            RemoteCmd::Tui => tui::run(&self.base, &self.token).await,
+            RemoteCmd::Status => {
                 let v = self.get_json("/v1/status").await?;
                 self.print_value(&v, |v| {
                     println!(
-                        "version={} schema={} bind={} running={:?}",
+                        "version={} schema={} bind={} running={}",
                         v["version"].as_str().unwrap_or("?"),
                         v["schema_version"],
                         v["bind"].as_str().unwrap_or("?"),
-                        v["running_groups"]
+                        text(&v["running_groups"])
                     );
                 });
                 Ok(())
             }
-            Commands::Connection(ConnectionCmd::Add {
+            RemoteCmd::Connection(ConnectionCmd::Add {
                 id,
                 kind,
                 config_json,
@@ -328,19 +436,22 @@ impl Client {
                         eprintln!("error: invalid --config-json: {e}");
                         ExitCode::from(2)
                     })?;
-                let body = serde_json::json!({
-                    "id": id,
-                    "kind": kind,
-                    "config_json": config,
-                    "secret": secret,
-                });
+                let body = ConnectionCreateRequest {
+                    id,
+                    kind,
+                    config_json: config,
+                    secret: secret.resolve().map_err(|err| {
+                        eprintln!("error: {err}");
+                        ExitCode::from(2)
+                    })?,
+                };
                 let v = self.post_json("/v1/connections", &body).await?;
                 self.print_value(&v, |v| {
-                    println!("connection {} created (secret sealed)", v["id"]);
+                    println!("connection {} created (secret sealed)", text(&v["id"]));
                 });
                 Ok(())
             }
-            Commands::Connection(ConnectionCmd::List) => {
+            RemoteCmd::Connection(ConnectionCmd::List) => {
                 let v = self.get_json("/v1/connections").await?;
                 self.print_value(&v, |v| {
                     if let Some(arr) = v.as_array() {
@@ -356,7 +467,7 @@ impl Client {
                 });
                 Ok(())
             }
-            Commands::Connection(ConnectionCmd::Show { id }) => {
+            RemoteCmd::Connection(ConnectionCmd::Show { id }) => {
                 let v = self.get_json(&format!("/v1/connections/{id}")).await?;
                 self.print_value(&v, |v| {
                     println!(
@@ -368,7 +479,7 @@ impl Client {
                 });
                 Ok(())
             }
-            Commands::Connection(ConnectionCmd::Delete { id }) => {
+            RemoteCmd::Connection(ConnectionCmd::Delete { id }) => {
                 self.delete(&format!("/v1/connections/{id}")).await?;
                 if matches!(self.output, OutputFormat::Json) {
                     println!("{{\"ok\":true}}");
@@ -377,7 +488,7 @@ impl Client {
                 }
                 Ok(())
             }
-            Commands::Group(GroupCmd::Create {
+            RemoteCmd::Group(GroupCmd::Create {
                 group_id,
                 total_records,
                 payload_size,
@@ -398,18 +509,21 @@ impl Client {
                     )?),
                     None => None,
                 };
-                let body = serde_json::json!({
-                    "group_id": group_id,
-                    "total_records": total_records,
-                    "payload_size": payload_size,
-                    "max_buffer_records": max_buffer_records,
-                    "max_buffer_bytes": max_buffer_bytes,
-                    "batch_max_records": batch_max_records,
-                    "batch_timeout_ms": batch_timeout_ms,
-                    "ordering_contract": ordering_contract,
-                    "connection_id": connection_id,
-                    "source_spec": source_spec,
-                });
+                // Adapter groups take neither synthetic field; the server
+                // rejects non-zero values for them.
+                let synthetic = connection_id.is_none();
+                let body = GroupCreateRequest {
+                    group_id,
+                    total_records: total_records.unwrap_or(if synthetic { 100 } else { 0 }),
+                    payload_size: payload_size.unwrap_or(if synthetic { 64 } else { 0 }),
+                    max_buffer_records,
+                    max_buffer_bytes,
+                    batch_max_records,
+                    batch_timeout_ms,
+                    ordering_contract: ordering_contract.unwrap_or_default(),
+                    connection_id,
+                    source_spec,
+                };
                 let v = self.post_json("/v1/groups", &body).await?;
                 self.print_value(&v, |v| {
                     println!(
@@ -420,36 +534,36 @@ impl Client {
                 });
                 Ok(())
             }
-            Commands::Group(GroupCmd::List) => {
+            RemoteCmd::Group(GroupCmd::List) => {
                 let v = self.get_json("/v1/groups").await?;
                 self.print_value(&v, |v| {
                     if let Some(arr) = v.as_array() {
                         for g in arr {
                             println!(
-                                "{}\trunning={}\tlifecycle={:?}",
+                                "{}\trunning={}\tlifecycle={}",
                                 g["group_id"].as_str().unwrap_or("?"),
                                 g["running"],
-                                g["lifecycle"]
+                                text(&g["lifecycle"])
                             );
                         }
                     }
                 });
                 Ok(())
             }
-            Commands::Group(GroupCmd::Show { id }) => {
+            RemoteCmd::Group(GroupCmd::Show { id }) => {
                 let v = self.get_json(&format!("/v1/groups/{id}")).await?;
                 self.print_value(&v, |v| {
                     println!(
-                        "group={} running={} lifecycle={:?} records={}",
+                        "group={} running={} lifecycle={} records={}",
                         v["group_id"].as_str().unwrap_or("?"),
                         v["running"],
-                        v["lifecycle"],
+                        text(&v["lifecycle"]),
                         v["total_records"]
                     );
                 });
                 Ok(())
             }
-            Commands::Group(GroupCmd::Delete { id }) => {
+            RemoteCmd::Group(GroupCmd::Delete { id }) => {
                 self.delete(&format!("/v1/groups/{id}")).await?;
                 if matches!(self.output, OutputFormat::Json) {
                     println!("{{\"ok\":true}}");
@@ -458,21 +572,21 @@ impl Client {
                 }
                 Ok(())
             }
-            Commands::Group(GroupCmd::Start { id }) => self.group_action(&id, "start").await,
-            Commands::Group(GroupCmd::Pause { id }) => self.group_action(&id, "pause").await,
-            Commands::Group(GroupCmd::Resume { id }) => self.group_action(&id, "resume").await,
-            Commands::Group(GroupCmd::Drain { id }) => self.group_action(&id, "drain").await,
-            Commands::Group(GroupCmd::Diagnostics { id }) => {
+            RemoteCmd::Group(GroupCmd::Start { id }) => self.group_action(&id, "start").await,
+            RemoteCmd::Group(GroupCmd::Pause { id }) => self.group_action(&id, "pause").await,
+            RemoteCmd::Group(GroupCmd::Resume { id }) => self.group_action(&id, "resume").await,
+            RemoteCmd::Group(GroupCmd::Drain { id }) => self.group_action(&id, "drain").await,
+            RemoteCmd::Group(GroupCmd::Diagnostics { id }) => {
                 let v = self
                     .get_json(&format!("/v1/groups/{id}/diagnostics"))
                     .await?;
                 self.print_value(&v, |v| {
                     let reason = v["last_stop_reason"].as_str().unwrap_or("");
                     println!(
-                        "group={} running={} lifecycle={:?} lag={} fetched={} acked={} replayed={} disconnects={} restarts={} recovered={} reason={}",
+                        "group={} running={} lifecycle={} lag={} fetched={} acked={} replayed={} disconnects={} restarts={} recovered={} reason={}",
                         v["group_id"].as_str().unwrap_or(&id),
                         v["running"],
-                        v["lifecycle"],
+                        text(&v["lifecycle"]),
                         v["checkpoint_lag"],
                         v["records_fetched"],
                         v["records_acked"],
@@ -485,7 +599,7 @@ impl Client {
                 });
                 Ok(())
             }
-            Commands::Consumer(ConsumerCmd::List { group }) => {
+            RemoteCmd::Consumer(ConsumerCmd::List { group }) => {
                 let v = self
                     .get_json(&format!("/v1/groups/{group}/consumers"))
                     .await?;
@@ -498,21 +612,34 @@ impl Client {
                 });
                 Ok(())
             }
-            Commands::Checkpoint(CheckpointCmd::Show { group }) => {
+            RemoteCmd::Checkpoint(CheckpointCmd::Show { group }) => {
                 let v = self
                     .get_json(&format!("/v1/groups/{group}/checkpoint"))
                     .await?;
                 self.print_value(&v, |v| {
                     println!(
-                        "group={} durable={:?} live={:?}",
+                        "group={} durable={} live={}",
                         v["group_id"].as_str().unwrap_or("?"),
-                        v["durable_cursor"],
-                        v["live_cursor"]
+                        text(&v["durable_cursor"]),
+                        text(&v["live_cursor"])
                     );
                 });
                 Ok(())
             }
-            Commands::Version | Commands::Serve { .. } | Commands::Test { .. } => unreachable!(),
+            RemoteCmd::Store(StoreCmd::Backup { path }) => {
+                let v = self
+                    .post_json("/v1/store/backup", &BackupRequest { path })
+                    .await?;
+                self.print_value(&v, |v| {
+                    println!(
+                        "backup written to {} ({} connections, {} groups)",
+                        text(&v["path"]),
+                        v["connections"],
+                        v["groups"]
+                    );
+                });
+                Ok(())
+            }
         }
     }
 
@@ -555,7 +682,7 @@ impl Client {
     async fn post_json(
         &self,
         path: &str,
-        body: &serde_json::Value,
+        body: &impl serde::Serialize,
     ) -> Result<serde_json::Value, ExitCode> {
         let resp = self
             .http
@@ -609,5 +736,14 @@ impl Client {
             eprintln!("error: invalid json: {e}: {text}");
             ExitCode::FAILURE
         })
+    }
+}
+
+/// A JSON value for text output: strings without quotes, other values as JSON.
+fn text(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Null => "-".into(),
+        other => other.to_string(),
     }
 }

@@ -69,22 +69,26 @@ pub async fn describe(
     if !spec.acknowledge_unsafe {
         let indexes = unique_indexes(client, spec).await?;
         let wanted: Vec<&str> = spec.order_by.iter().map(|col| col.name.as_str()).collect();
-        let covered = indexes.iter().any(|cols| {
-            cols.len() >= wanted.len()
-                && cols
-                    .iter()
-                    .map(String::as_str)
-                    .take(wanted.len())
-                    .eq(wanted.iter().copied())
-        });
-        if !covered {
+        if !indexes.iter().any(|cols| leads_with(&wanted, cols)) {
             return Err(
-                "order columns are not a prefix of a unique index; set acknowledge_unsafe to accept the risk"
+                "order columns must start with every column of a unique index; set acknowledge_unsafe to accept the risk"
                     .into(),
             );
         }
     }
     Ok(columns)
+}
+
+/// True when `order` begins with all columns of `unique`, in index order.
+/// Only then is the order tuple unique, so a keyset read cannot skip rows that
+/// share a key with the last delivered row.
+fn leads_with(order: &[&str], unique: &[String]) -> bool {
+    !unique.is_empty()
+        && unique.len() <= order.len()
+        && unique
+            .iter()
+            .map(String::as_str)
+            .eq(order[..unique.len()].iter().copied())
 }
 
 async fn unique_indexes(client: &Client, spec: &SourceSpec) -> Result<Vec<Vec<String>>, String> {

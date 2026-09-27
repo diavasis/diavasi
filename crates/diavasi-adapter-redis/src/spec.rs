@@ -1,61 +1,63 @@
 use diavasi::core::{LogicalCursor, OrderingAtom, OrderingValue};
 
-/// Redis stream read. The group name is the Redis consumer group, not the Diavasi group id.
+/// Redis stream read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceSpec {
+    /// Stream key.
     pub stream: String,
-    pub group: String,
+    /// Fields copied into the payload. `None` copies every field.
     pub fields: Option<Vec<String>>,
+}
+
+/// The `source_spec` JSON as written. Checked into a [`SourceSpec`].
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawSpec {
+    stream: String,
+    // `group` named a Redis consumer group before reads became XRANGE.
+    // Stored specs still carry it, so it is accepted and ignored.
+    #[serde(default, rename = "group")]
+    _group: Option<String>,
+    #[serde(default)]
+    fields: Option<Vec<String>>,
 }
 
 impl SourceSpec {
     pub fn parse(value: &serde_json::Value) -> Result<Self, String> {
-        let object = value.as_object().ok_or("source_spec must be an object")?;
-        let stream = required_name(object, "stream")?;
-        let group = required_name(object, "group")?;
-        let fields = match object.get("fields") {
-            None => None,
-            Some(serde_json::Value::Array(items)) => {
-                let mut names = Vec::with_capacity(items.len());
-                for item in items {
-                    let name = item
-                        .as_str()
-                        .filter(|name| !name.is_empty())
-                        .ok_or("fields entries must be non-empty strings")?;
-                    names.push(name.to_string());
-                }
-                Some(names)
-            }
-            Some(_) => return Err("fields must be an array of strings".into()),
-        };
+        let raw: RawSpec = diavasi::runtime::parse_json(value, "source_spec")?;
+        if raw.stream.is_empty() {
+            return Err("stream is required".into());
+        }
+        if raw
+            .fields
+            .as_ref()
+            .is_some_and(|names| names.iter().any(String::is_empty))
+        {
+            return Err("fields entries must be non-empty strings".into());
+        }
         Ok(Self {
-            stream,
-            group,
-            fields,
+            stream: raw.stream,
+            fields: raw.fields,
         })
     }
 }
 
-fn required_name(
-    object: &serde_json::Map<String, serde_json::Value>,
-    key: &str,
-) -> Result<String, String> {
-    object
-        .get(key)
-        .and_then(|value| value.as_str())
-        .filter(|name| !name.is_empty())
-        .map(str::to_string)
-        .ok_or_else(|| format!("{key} is required"))
-}
-
-/// Empty cursor is `0-0`, which is strictly before every id Redis will accept.
-pub fn cursor_to_id(cursor: &LogicalCursor) -> Result<String, String> {
+/// The cursor as `(milliseconds, sequence)`, or `None` at the start.
+pub fn cursor_to_pair(cursor: &LogicalCursor) -> Result<Option<(u64, u64)>, String> {
     match cursor {
-        None => Ok("0-0".into()),
+        None => Ok(None),
         Some(value) => match value.atoms() {
-            [OrderingAtom::U64(ms), OrderingAtom::U64(seq)] => Ok(format!("{ms}-{seq}")),
+            [OrderingAtom::U64(ms), OrderingAtom::U64(seq)] => Ok(Some((*ms, *seq))),
             _ => Err("redis cursor must be milliseconds and sequence".into()),
         },
+    }
+}
+
+/// Parse `milliseconds-sequence`.
+pub fn id_to_pair(id: &str) -> Result<(u64, u64), String> {
+    match id_to_ordering(id)?.atoms() {
+        [OrderingAtom::U64(ms), OrderingAtom::U64(seq)] => Ok((*ms, *seq)),
+        _ => unreachable!("id_to_ordering returns two U64 atoms"),
     }
 }
 
@@ -78,24 +80,28 @@ mod tests {
     fn omitted_fields_reads_the_whole_entry() {
         let spec = SourceSpec::parse(&serde_json::json!({
             "stream": "events",
-            "group": "diavasi",
         }))
         .unwrap();
         assert_eq!(spec.stream, "events");
-        assert_eq!(spec.group, "diavasi");
         assert!(spec.fields.is_none());
     }
 
     #[test]
-    fn rejects_a_missing_group_and_a_bad_field_list() {
-        let missing = SourceSpec::parse(&serde_json::json!({"stream": "events"}));
-        assert!(missing.unwrap_err().contains("group"));
+    fn accepts_a_legacy_group_and_rejects_a_bad_field_list() {
+        let legacy = SourceSpec::parse(&serde_json::json!({"stream": "events", "group": "g"}));
+        assert_eq!(legacy.unwrap().stream, "events");
+        let bad_group = SourceSpec::parse(&serde_json::json!({"stream": "events", "group": 1}));
+        assert!(bad_group.unwrap_err().contains("group"));
         let fields = SourceSpec::parse(&serde_json::json!({
             "stream": "events",
             "group": "g",
             "fields": "body",
         }));
-        assert!(fields.unwrap_err().contains("array"));
+        assert!(fields.unwrap_err().contains("sequence"));
+        let empty = SourceSpec::parse(&serde_json::json!({"stream": "events", "fields": [""]}));
+        assert!(empty.unwrap_err().contains("non-empty"));
+        let blank = SourceSpec::parse(&serde_json::json!({"stream": ""}));
+        assert!(blank.unwrap_err().contains("stream"));
     }
 
     #[test]
@@ -103,8 +109,17 @@ mod tests {
         let earlier = id_to_ordering("9-1").unwrap();
         let later = id_to_ordering("10-0").unwrap();
         assert!(earlier < later);
-        assert_eq!(cursor_to_id(&None).unwrap(), "0-0");
-        assert_eq!(cursor_to_id(&Some(later.clone())).unwrap(), "10-0");
+        assert_eq!(cursor_to_pair(&None).unwrap(), None);
+        assert_eq!(cursor_to_pair(&Some(later.clone())).unwrap(), Some((10, 0)));
+        assert_eq!(id_to_pair("10-0").unwrap(), (10, 0));
         assert!(id_to_ordering("nope").is_err());
+    }
+
+    /// S2: a misspelled key is an error, not an option left at its default.
+    #[test]
+    fn rejects_unknown_keys() {
+        let err = SourceSpec::parse(&serde_json::json!({"stream": "events", "feilds": ["a"]}))
+            .unwrap_err();
+        assert!(err.contains("feilds"), "{err}");
     }
 }

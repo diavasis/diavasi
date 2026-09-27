@@ -4,7 +4,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::Semaphore;
 use tracing::warn;
 
-use crate::protocol::{Envelope, RecordBatch, envelope};
+use crate::bench_protocol::{Envelope, RecordBatch, envelope};
 
 use super::config::BenchConfig;
 use super::metrics::Metrics;

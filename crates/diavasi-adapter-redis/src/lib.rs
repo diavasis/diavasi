@@ -1,5 +1,36 @@
-//! Redis Streams source. Resume is the committed stream id.
+//! Redis Streams source for Diavasi. A group reads one stream with `XRANGE`
+//! after the committed stream id and writes nothing to Redis. ADR 0010 and
+//! `docs/adapters/redis.md` state the contract.
+//!
+//! Install the factory in the server:
+//!
+//! ```no_run
+//! use std::sync::Arc;
+//! use diavasi::control::{ServeConfig, serve};
+//!
+//! # async fn run(config: ServeConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+//! serve(ServeConfig {
+//!     source_factory: Some(Arc::new(diavasi_adapter_redis::RedisFactory)),
+//!     ..config
+//! })
+//! .await?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! A connection and a group that reads it:
+//!
+//! ```json
+//! {"id": "rd", "kind": "redis", "config_json": {"host": "cache.internal", "port": 6379, "db": 0}, "secret": "unused"}
+//! ```
+//!
+//! ```json
+//! {"stream": "orders", "fields": ["id", "total"]}
+//! ```
+#![deny(missing_docs)]
+#![deny(rustdoc::broken_intra_doc_links)]
 
+/// Connecting to Redis, from a stored connection or a URL.
 pub mod connect;
 mod reader;
 mod spec;
@@ -11,6 +42,7 @@ use futures::future::BoxFuture;
 
 use reader::RedisSource;
 
+/// The connection `kind` this adapter reads: `redis`.
 pub const NAME: &str = "redis";
 
 /// Opens one Redis connection per running group.

@@ -338,7 +338,7 @@ fn restart_soak_no_omissions() {
                 }
                 let id = batch.id;
                 match g.ack(id) {
-                    Ok(()) => {}
+                    Ok(_) => {}
                     Err(StoreError::SimulatedCrash(_)) => {
                         drop(g);
                         let store = reopen(&dir);
@@ -684,24 +684,6 @@ fn next_batch_id_survives_ack_persist_and_reopen() {
 }
 
 #[test]
-fn group_record_from_engine_snapshot() {
-    let (_dir, store) = temp_store();
-    let mut g = DurableGroup::create(store, cfg("g1", 4, 4, 2), "contract-x").unwrap();
-    g.start().unwrap();
-    let snap = g.engine().snapshot();
-    let rec = GroupRecord::from_engine_snapshot(snap, "contract-x");
-    assert_eq!(rec.group_id().as_str(), "g1");
-    assert_eq!(rec.ordering_contract, "contract-x");
-}
-
-#[test]
-fn no_crash_hook_and_crash_point_display() {
-    let hook = crate::store::NoCrash::hook();
-    assert_eq!(hook(CrashPoint::AfterDeliver), CrashAction::Continue);
-    assert_eq!(CrashPoint::BeforeTxnCommit.to_string(), "BeforeTxnCommit");
-}
-
-#[test]
 fn tick_timeout_requeues_then_completes_durably() {
     let (dir, store) = temp_store();
     let mut config = cfg("g1", 4, 10, 2);
@@ -712,8 +694,8 @@ fn tick_timeout_requeues_then_completes_durably() {
     g.join_consumer(c.clone()).unwrap();
     let _ = g.poll_fetch().unwrap();
     let b = g.assign_batch(&c).unwrap();
-    std::thread::sleep(Duration::from_millis(5));
-    assert_eq!(g.tick(std::time::Instant::now()).unwrap(), 1);
+    let later = std::time::Instant::now() + Duration::from_secs(1);
+    assert_eq!(g.tick(later).unwrap(), 1);
     assert_eq!(g.engine().inflight_len(), 0);
     // Re-assign and ack to durable completion.
     let b2 = g.assign_batch(&c).unwrap();
@@ -729,7 +711,7 @@ fn tick_timeout_requeues_then_completes_durably() {
 #[test]
 fn set_crash_hook_can_be_cleared() {
     let (_dir, store) = temp_store();
-    let mut g = DurableGroup::create(store, cfg("g1", 4, 4, 2), "synthetic-u64")
+    let mut g = DurableGroup::create(Arc::clone(&store), cfg("g1", 4, 4, 2), "synthetic-u64")
         .unwrap()
         .with_crash_hook(abort_at(CrashPoint::AfterAckApplied));
     g.start().unwrap();
@@ -738,11 +720,93 @@ fn set_crash_hook_can_be_cleared() {
     let _ = g.poll_fetch().unwrap();
     let b = g.assign_batch(&c).unwrap();
     assert!(g.ack(b.id).is_err());
-    // Clear hook and finish.
-    g.set_crash_hook(crate::store::NoCrash::hook());
-    let _ = g.poll_fetch().unwrap();
-    // Prior ack applied in memory but not persisted; engine may already have advanced.
-    // Assign remaining and drain with no crash.
+    // The hook aborted after the engine applied the ack and before the write.
+    let gid = GroupId::new("g1").unwrap();
+    assert_eq!(g.committed_cursor(), &Some(OrderingValue::single_u64(2)));
+    assert_eq!(store.load_checkpoint(&gid).unwrap(), None);
+    g.set_crash_hook(crate::store::no_crash());
     drain_all(&mut g, &c);
     assert_eq!(g.committed_cursor(), &Some(OrderingValue::single_u64(4)));
+}
+
+/// B8: creating a group whose id already exists must fail and must not reset
+/// the existing group's committed cursor.
+#[test]
+fn regress_b08_create_rejects_an_existing_group_and_keeps_its_cursor() {
+    let (_dir, store) = temp_store();
+    let mut g =
+        DurableGroup::create(Arc::clone(&store), cfg("g1", 10, 10, 2), "synthetic-u64").unwrap();
+    g.start().unwrap();
+    let c = ConsumerId::new("c1").unwrap();
+    g.join_consumer(c.clone()).unwrap();
+    g.poll_fetch().unwrap();
+    let batch = g.assign_batch(&c).unwrap();
+    g.ack(batch.id).unwrap();
+    let gid = GroupId::new("g1").unwrap();
+    let before = store.load_checkpoint(&gid).unwrap();
+    assert_eq!(before, Some(OrderingValue::single_u64(2)));
+
+    let again = DurableGroup::create(Arc::clone(&store), cfg("g1", 10, 10, 2), "synthetic-u64");
+    assert!(again.is_err(), "second create of g1 succeeded");
+    assert_eq!(store.load_checkpoint(&gid).unwrap(), before);
+}
+
+/// B9: progress committed after the group was deleted must not bring the
+/// group record back.
+#[test]
+fn regress_b09_commit_after_delete_does_not_resurrect_the_group() {
+    let (_dir, store) = temp_store();
+    let mut g =
+        DurableGroup::create(Arc::clone(&store), cfg("g1", 10, 10, 2), "synthetic-u64").unwrap();
+    g.start().unwrap();
+    let c = ConsumerId::new("c1").unwrap();
+    g.join_consumer(c.clone()).unwrap();
+    g.poll_fetch().unwrap();
+    let batch = g.assign_batch(&c).unwrap();
+    let gid = GroupId::new("g1").unwrap();
+    store.delete_group(&gid).unwrap();
+
+    let result = g.ack(batch.id);
+    assert!(
+        result.is_err(),
+        "ack committed progress for a deleted group"
+    );
+    assert!(store.get_group(&gid).unwrap().is_none(), "group came back");
+}
+
+/// G8: a backup holds every connection, group, and checkpoint, opens as a
+/// store, and refuses to overwrite a file.
+#[test]
+fn backup_copies_everything_and_never_overwrites() {
+    let (dir, store) = temp_store();
+    let key = StoreKey::generate();
+    store
+        .put_connection(&ConnectionRecord {
+            id: "c1".into(),
+            kind: "postgres".into(),
+            config_json: serde_json::json!({"host": "db"}),
+            sealed_secret: seal_secret(&key, b"pw").unwrap(),
+        })
+        .unwrap();
+    let mut g =
+        DurableGroup::create(Arc::clone(&store), cfg("g1", 4, 4, 2), "synthetic-u64").unwrap();
+    g.start().unwrap();
+    let c = ConsumerId::new("c").unwrap();
+    g.join_consumer(c.clone()).unwrap();
+    g.poll_fetch().unwrap();
+    let batch = g.assign_batch(&c).unwrap();
+    g.ack(batch.id).unwrap();
+
+    let path = dir.path().join("backup.redb");
+    let summary = store.backup_to(&path).unwrap();
+    assert_eq!((summary.connections, summary.groups), (1, 1));
+    let copy = RedbStore::open(&path).unwrap();
+    let gid = GroupId::new("g1").unwrap();
+    assert_eq!(
+        copy.load_checkpoint(&gid).unwrap(),
+        Some(OrderingValue::single_u64(2))
+    );
+    let conn = copy.get_connection("c1").unwrap().unwrap();
+    assert_eq!(open_secret(&key, &conn.sealed_secret).unwrap(), b"pw");
+    assert!(store.backup_to(&path).is_err(), "backup overwrote a file");
 }

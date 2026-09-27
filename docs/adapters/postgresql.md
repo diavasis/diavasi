@@ -13,10 +13,10 @@ Delivery stays at-least-once. Unacked rows are read again after a crash. The dat
 ## Assumption
 
 - The table has a total order. Order columns are non-null and match the declared types (`int2`, `int4`, `int8`, `text`, `varchar`, `bytea`, `timestamptz`).
-- A unique index covers those columns in that order, unless the operator sets `acknowledge_unsafe`.
+- The order columns start with every column of a unique index, in index order, unless the operator sets `acknowledge_unsafe`. With `UNIQUE (a, b)`, ordering by `a` alone is rejected.
 - Producers insert new keys ahead of the cursor, or accept that keys behind the cursor are invisible.
-- Text order is `COLLATE "C"`.
-- The connection password is the sealed secret. `sslmode` is `disable` or `require`.
+- Text order is `COLLATE "C"`. An index serves that sort only when it is declared with the same collation, for example `CREATE UNIQUE INDEX ON events (name COLLATE "C", id)`. Without one, each read sorts the filtered table.
+- The connection password is the sealed secret. `sslmode` is `disable`, `require`, or `verify-full`; both TLS modes verify the server certificate against the public roots, or against `ca_pem` when it is set.
 
 ## Limitation
 

@@ -11,7 +11,7 @@ use super::pb::envelope::Body;
 use super::session::{Phase, Session};
 use super::{
     ConsumerClient, ConsumerOptions, DataPlaneConfig, Envelope, PROTOCOL_VERSION, ack, hello,
-    join_group, leave, nack, serve_dataplane,
+    join_group, leave, nack, serve_dataplane_on,
 };
 use crate::control::{ControlService, GroupCreateRequest};
 use crate::store::{RedbStore, StoreKey};
@@ -42,7 +42,7 @@ fn golden_fixtures_round_trip() {
             batch_id: 1,
             records: vec![super::pb::Record {
                 record_id: 9,
-                payload: b"p".to_vec(),
+                payload: bytes::Bytes::from_static(b"p"),
             }],
         })
         .encode_to_vec(),
@@ -192,23 +192,25 @@ async fn start_plane_inner(
         svc.start_group("g1").await.unwrap();
     }
 
-    let (ca, cert, key) = super::tls::generate_self_signed().unwrap();
+    let (ca, cert, key) = super::tls::generate_self_signed(&[]).unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    drop(listener);
     let supervisor = svc.supervisor();
     let cert_bytes = cert.clone().into_bytes();
     let key_bytes = key.into_bytes();
     tokio::spawn(async move {
-        let _ = serve_dataplane(DataPlaneConfig {
-            bind: addr,
-            tls_cert_pem: cert_bytes,
-            tls_key_pem: key_bytes,
-            api_token: "tok".into(),
-            supervisor,
-            heartbeat_interval,
-            heartbeat_timeout,
-        })
+        let _ = serve_dataplane_on(
+            DataPlaneConfig {
+                bind: addr,
+                tls_cert_pem: cert_bytes,
+                tls_key_pem: key_bytes,
+                api_token: "tok".into(),
+                supervisor,
+                heartbeat_interval,
+                heartbeat_timeout,
+            },
+            listener,
+        )
         .await;
     });
     tokio::time::sleep(Duration::from_millis(80)).await;
@@ -361,9 +363,9 @@ fn tls_material_is_reused_when_present() {
     let dir = tempdir().unwrap();
     let cert = dir.path().join("dataplane.crt");
     let key = dir.path().join("dataplane.key");
-    let (first_cert, first_key) = super::load_or_generate_pem(&cert, &key).unwrap();
+    let (first_cert, first_key) = super::load_or_generate_pem(&cert, &key, &[]).unwrap();
     assert!(dir.path().join("dataplane-ca.crt").exists());
-    let (second_cert, second_key) = super::load_or_generate_pem(&cert, &key).unwrap();
+    let (second_cert, second_key) = super::load_or_generate_pem(&cert, &key, &[]).unwrap();
     assert_eq!(first_cert, second_cert);
     assert_eq!(first_key, second_key);
 }
@@ -485,4 +487,47 @@ async fn authorization_must_use_a_bearer_token() {
     let err = client.consume(request).await.unwrap_err();
     assert_eq!(err.code(), tonic::Code::Unauthenticated);
     drop(tx);
+}
+
+// Regression tests for the v0.12.0 review. Each name carries its finding id.
+
+/// B12: a client that reconnects with the same consumer id while its old
+/// stream is still open takes over, and gets the old stream's unacked batch.
+#[tokio::test]
+async fn regress_b12_reconnect_with_the_same_consumer_id_takes_over() {
+    let plane = start_plane(20, 32, 5).await;
+    let mut stale = client_opts(&plane, "a", 1);
+    stale.idle_after_join = Some(Duration::from_secs(5));
+    stale.timeout = Duration::from_secs(8);
+    let stale = tokio::spawn(ConsumerClient::run(stale));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let mut fresh = client_opts(&plane, "a", 4);
+    fresh.expect_records = Some(20);
+    fresh.timeout = Duration::from_secs(5);
+    let report = ConsumerClient::run(fresh)
+        .await
+        .expect("reconnect with the same consumer id was rejected");
+    let unique: HashSet<_> = report.record_ids.iter().copied().collect();
+    assert_eq!(unique, (1..=20).collect());
+    stale.abort();
+}
+
+/// B6: certificate and key files supplied by the operator are read as they
+/// are, even when no `dataplane-ca.crt` sits next to them.
+#[test]
+fn regress_b06_supplied_tls_files_are_never_overwritten() {
+    let dir = tempdir().unwrap();
+    let (_ca, cert, key) = super::tls::generate_self_signed(&[]).unwrap();
+    let cert_path = dir.path().join("operator.crt");
+    let key_path = dir.path().join("operator.key");
+    std::fs::write(&cert_path, &cert).unwrap();
+    std::fs::write(&key_path, &key).unwrap();
+
+    let (loaded_cert, loaded_key) =
+        super::load_or_generate_pem(&cert_path, &key_path, &[]).unwrap();
+    assert_eq!(std::fs::read_to_string(&cert_path).unwrap(), cert);
+    assert_eq!(std::fs::read_to_string(&key_path).unwrap(), key);
+    assert_eq!(loaded_cert, cert.into_bytes());
+    assert_eq!(loaded_key, key.into_bytes());
 }

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted for Stage 11 onward.
+Accepted in v0.11.0.
 
 ## Context
 
@@ -18,7 +18,7 @@ Every SDK is a thin client of protocol v1:
 - Send `Hello` version 1, then `JoinGroup` after `HelloAck`.
 - Yield each `RecordBatch`. The caller acks by `batch_id`. Clients do not dedupe on `record_id`, because that field is 0 for Redis and for compound or token-scan Scylla keys.
 - Send `FlowControl` once after `Joined`. Answer a server `Heartbeat` with a `Heartbeat`. Send `Leave` on a clean stop.
-- Reconnect opens a new stream with the same consumer id. The server replays unacked batches. The client does not resume from a key.
+- Reconnect opens a new stream with the same consumer id. The server replays unacked batches. When the old stream is still open, for example after a network partition the server has not noticed, the new stream takes it over: the old stream receives error 2 and closes, and its unacked batches return to the buffer. The client does not resume from a key.
 - Surface protocol `Error` codes 1 through 8. An unknown version, a missing or wrong token, and a group that is not running fail the call.
 
 The native client is C, using the gRPC C stack against the same proto. The Rust client is `diavasi-client`. It is not a dependency of the server crate.

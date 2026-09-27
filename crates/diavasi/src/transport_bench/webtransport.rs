@@ -7,7 +7,7 @@ use tracing::{info, warn};
 use wtransport::tls::{Identity, Sha256Digest};
 use wtransport::{ClientConfig, Endpoint, ServerConfig};
 
-use crate::protocol::{Envelope, envelope};
+use crate::bench_protocol::{Envelope, envelope};
 
 use super::codec::EnvelopeCodec;
 use super::config::{BenchConfig, Role};
