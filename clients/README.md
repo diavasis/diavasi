@@ -32,6 +32,14 @@ docker compose -f clients/docker-compose.yml --profile python up --abort-on-cont
 
 The same shape works for `elixir`, `rust`, `go`, `js`, `java`, `csharp`, and `c`. Client images build from the GitHub repositories. `--profile all` starts every demo. The server writes the data-plane CA onto a volume and creates the synthetic group `demo`. No database container is involved.
 
+The published server image is separate from that Compose file and from the database lab in the root `docker-compose.yml`. On a release tag the workflow pushes `ghcr.io/diavasis/diavasi:<version>` and `:latest`, built from the linux-x86_64 release binary.
+
+```bash
+docker run --rm -p 7700:7700 -p 7710:7710 \
+  -e DIAVASI_API_TOKEN=secret \
+  ghcr.io/diavasis/diavasi:0.13.0
+```
+
 ## Notebooks
 
 ```bash

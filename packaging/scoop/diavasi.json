@@ -1,0 +1,26 @@
+{
+  "version": "0.13.0",
+  "description": "Durable consumer groups over existing databases",
+  "homepage": "https://github.com/diavasis/diavasi",
+  "license": "Apache-2.0",
+  "architecture": {
+    "64bit": {
+      "url": "https://github.com/diavasis/diavasi/releases/download/v0.13.0/diavasi-v0.13.0-windows-x86_64.zip",
+      "hash": "REPLACE_AFTER_RELEASE"
+    }
+  },
+  "bin": "diavasi.exe",
+  "checkver": {
+    "github": "https://github.com/diavasis/diavasi"
+  },
+  "autoupdate": {
+    "architecture": {
+      "64bit": {
+        "url": "https://github.com/diavasis/diavasi/releases/download/v$version/diavasi-v$version-windows-x86_64.zip",
+        "hash": {
+          "url": "https://github.com/diavasis/diavasi/releases/download/v$version/SHA256SUMS"
+        }
+      }
+    }
+  }
+}

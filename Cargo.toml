@@ -12,14 +12,14 @@ members = [
 default-members = ["crates/diavasi-core", "crates/diavasi"]
 
 [workspace.package]
-version = "0.12.0"
+version = "0.13.0"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/diavasis/diavasi"
 rust-version = "1.85"
 
 [workspace.dependencies]
-diavasi = { package = "diavasi-core", version = "0.12.0", path = "crates/diavasi-core", default-features = false }
+diavasi = { package = "diavasi-core", version = "0.13.0", path = "crates/diavasi-core", default-features = false }
 anyhow = "1"
 bytes = "1"
 clap = { version = "4", features = ["derive"] }
@@ -58,7 +58,7 @@ http-body-util = "0.1"
 tokio-postgres = { version = "0.7", features = ["with-serde_json-1"] }
 tokio-postgres-rustls = "0.13"
 webpki-roots = "0.26"
-diavasi-adapter-postgres = { version = "0.12.0", path = "crates/diavasi-adapter-postgres" }
-diavasi-adapter-mongodb = { version = "0.12.0", path = "crates/diavasi-adapter-mongodb" }
-diavasi-adapter-redis = { version = "0.12.0", path = "crates/diavasi-adapter-redis" }
-diavasi-adapter-scylla = { version = "0.12.0", path = "crates/diavasi-adapter-scylla" }
+diavasi-adapter-postgres = { version = "0.13.0", path = "crates/diavasi-adapter-postgres" }
+diavasi-adapter-mongodb = { version = "0.13.0", path = "crates/diavasi-adapter-mongodb" }
+diavasi-adapter-redis = { version = "0.13.0", path = "crates/diavasi-adapter-redis" }
+diavasi-adapter-scylla = { version = "0.13.0", path = "crates/diavasi-adapter-scylla" }
