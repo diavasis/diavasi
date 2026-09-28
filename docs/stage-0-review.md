@@ -2,7 +2,7 @@
 
 ## What changed
 
-- Rust workspace with fixed crates: `diavasi`, `diavasi-cli`, four adapter stubs
+- Rust workspace with fixed crates: `diavasi-core`, `diavasi`, four adapter stubs
 - Transport-neutral protobuf protocol under `diavasi::protocol`
 - Bake-off: TCP, gRPC, QUIC, WebTransport (`wtransport`)
 - Rust / Python / Elixir TCP clients; results in `docs/bench/results.jsonl`

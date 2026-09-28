@@ -2,7 +2,7 @@
 
 This tutorial shows the frozen production data plane: TLS gRPC protocol v1, mapped onto a running synthetic group.
 
-Related code: `crates/diavasi/src/dataplane/`, [diavasi-python](https://github.com/diavasis/diavasi-python) `diavasi_data/`, [diavasi-elixir](https://github.com/diavasis/diavasi-elixir) `lib/diavasi_data/`. Decisions: [ADR 0006](../adr/0006-data-plane-transport.md), [ADR 0007](../adr/0007-protocol-v1.md). Prior: [Stage 4](stage-04-control-plane.md).
+Related code: `crates/diavasi-core/src/dataplane/`, [diavasi-python](https://github.com/diavasis/diavasi-python) `diavasi_data/`, [diavasi-elixir](https://github.com/diavasis/diavasi-elixir) `lib/diavasi_data/`. Decisions: [ADR 0006](../adr/0006-data-plane-transport.md), [ADR 0007](../adr/0007-protocol-v1.md). Prior: [Stage 4](stage-04-control-plane.md).
 
 ## 1. What Stage 5 is
 
@@ -22,7 +22,7 @@ Stage 0 measured TCP a bit faster on localhost. gRPC over HTTP/2 with TLS is wha
 ## 3. Start the server
 
 ```bash
-cargo build -p diavasi-cli
+cargo build -p diavasi
 export PATH="$PWD/target/debug:$PATH"
 mkdir -p /tmp/diavasi-s5
 export DIAVASI_API_TOKEN=dev-token

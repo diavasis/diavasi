@@ -964,6 +964,112 @@ dependencies = [
 name = "diavasi"
 version = "0.12.0"
 dependencies = [
+ "clap",
+ "diavasi-adapter-mongodb",
+ "diavasi-adapter-postgres",
+ "diavasi-adapter-redis",
+ "diavasi-adapter-scylla",
+ "diavasi-core",
+ "futures",
+ "mongodb",
+ "ratatui",
+ "redis",
+ "reqwest",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "diavasi-adapter-mongodb"
+version = "0.12.0"
+dependencies = [
+ "bytes",
+ "diavasi-core",
+ "futures",
+ "mongodb",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "diavasi-adapter-postgres"
+version = "0.12.0"
+dependencies = [
+ "bytes",
+ "diavasi-core",
+ "futures",
+ "hex",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-postgres",
+ "tokio-postgres-rustls",
+ "tracing",
+ "webpki-roots 0.26.11",
+]
+
+[[package]]
+name = "diavasi-adapter-redis"
+version = "0.12.0"
+dependencies = [
+ "bytes",
+ "diavasi-core",
+ "futures",
+ "redis",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "diavasi-adapter-scylla"
+version = "0.12.0"
+dependencies = [
+ "base64",
+ "bytes",
+ "diavasi-core",
+ "futures",
+ "rustls",
+ "scylla",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
+ "webpki-roots 0.26.11",
+]
+
+[[package]]
+name = "diavasi-bench"
+version = "0.12.0"
+dependencies = [
+ "clap",
+ "diavasi-adapter-postgres",
+ "diavasi-core",
+ "reqwest",
+ "rustls",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "diavasi-core"
+version = "0.12.0"
+dependencies = [
  "anyhow",
  "axum 0.8.9",
  "bytes",
@@ -1001,114 +1107,6 @@ dependencies = [
  "tracing-subscriber",
  "wtransport",
  "zeroize",
-]
-
-[[package]]
-name = "diavasi-adapter-mongodb"
-version = "0.12.0"
-dependencies = [
- "bytes",
- "diavasi",
- "futures",
- "mongodb",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "diavasi-adapter-postgres"
-version = "0.12.0"
-dependencies = [
- "bytes",
- "diavasi",
- "futures",
- "hex",
- "rustls",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-postgres",
- "tokio-postgres-rustls",
- "tracing",
- "webpki-roots 0.26.11",
-]
-
-[[package]]
-name = "diavasi-adapter-redis"
-version = "0.12.0"
-dependencies = [
- "bytes",
- "diavasi",
- "futures",
- "redis",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "diavasi-adapter-scylla"
-version = "0.12.0"
-dependencies = [
- "base64",
- "bytes",
- "diavasi",
- "futures",
- "rustls",
- "scylla",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
- "uuid",
- "webpki-roots 0.26.11",
-]
-
-[[package]]
-name = "diavasi-bench"
-version = "0.12.0"
-dependencies = [
- "clap",
- "diavasi",
- "diavasi-adapter-postgres",
- "reqwest",
- "rustls",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "diavasi-cli"
-version = "0.12.0"
-dependencies = [
- "anyhow",
- "clap",
- "diavasi",
- "diavasi-adapter-mongodb",
- "diavasi-adapter-postgres",
- "diavasi-adapter-redis",
- "diavasi-adapter-scylla",
- "futures",
- "mongodb",
- "ratatui",
- "redis",
- "reqwest",
- "rustls",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

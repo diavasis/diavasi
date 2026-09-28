@@ -34,7 +34,7 @@ Compose publishes ScyllaDB on `127.0.0.1:9042` with no authentication. The conta
 ## 3. Start the server
 
 ```bash
-cargo build -p diavasi-cli
+cargo build -p diavasi
 export PATH="$PWD/target/debug:$PATH"
 mkdir -p /tmp/diavasi-s10
 export DIAVASI_API_TOKEN=dev-token

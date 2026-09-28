@@ -20,7 +20,7 @@ Secrets on connections must never round-trip in plaintext after create. The engi
   - `drain` → `GroupHandle::drain` (Running → Draining). A draining group reads nothing new and accepts no new consumers. Records already fetched are still delivered and acked. When the buffer and the in-flight set are empty, the group records `Stopped` and its task exits with stop reason `drained`. Draining a group that is not running, or twice, is 409.
   - `delete` → fail if running; else `StateStore::delete_group`
 - Connection create seals the secret with the store key. List and show never return it.
-- The `diavasi` CLI is an HTTP client for the admin commands, with `--output text` or `--output json`. `diavasi serve` calls `diavasi::control::serve`.
+- The `diavasi` executable is both the server and the admin client. `serve` calls `diavasi::control::serve` and registers the adapters. The other commands are an HTTP client, with `--output text` or `--output json`.
 
 ## Consequences
 

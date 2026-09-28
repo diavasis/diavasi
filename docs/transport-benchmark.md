@@ -6,7 +6,7 @@
 
 ## Methodology
 
-Shared logical protocol (`JoinGroup`, `Joined`, `RecordBatch`, `Ack`, `FlowControl`, `Heartbeat`, `Error`) encoded as protobuf (`crates/diavasi/proto/bench.proto`).
+Shared logical protocol (`JoinGroup`, `Joined`, `RecordBatch`, `Ack`, `FlowControl`, `Heartbeat`, `Error`) encoded as protobuf (`crates/diavasi-core/proto/bench.proto`).
 
 | Transport | Framing | Notes |
 | --- | --- | --- |
@@ -24,18 +24,18 @@ Synthetic producer generates records faster than transports. Metrics: records/se
 ## How to run (Rust)
 
 ```bash
-cargo run -p diavasi --release --bin diavasi-transport-bench --features transport-bench -- \
+cargo run -p diavasi-core --release --bin diavasi-transport-bench --features transport-bench -- \
   --transport tcp --smoke --output docs/bench/results.jsonl
 
-cargo run -p diavasi --release --bin diavasi-transport-bench --features transport-bench -- \
+cargo run -p diavasi-core --release --bin diavasi-transport-bench --features transport-bench -- \
   --transport grpc --smoke --listen 127.0.0.1:9801 --connect 127.0.0.1:9801 \
   --output docs/bench/results.jsonl
 
-cargo run -p diavasi --release --bin diavasi-transport-bench --features transport-bench -- \
+cargo run -p diavasi-core --release --bin diavasi-transport-bench --features transport-bench -- \
   --transport quic --smoke --listen 127.0.0.1:9802 --connect 127.0.0.1:9802 \
   --output docs/bench/results.jsonl
 
-cargo run -p diavasi --release --bin diavasi-transport-bench --features transport-bench -- \
+cargo run -p diavasi-core --release --bin diavasi-transport-bench --features transport-bench -- \
   --transport webtransport --smoke --listen 127.0.0.1:9803 --connect 127.0.0.1:9803 \
   --output docs/bench/results.jsonl
 ```

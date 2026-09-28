@@ -9,9 +9,9 @@ use diavasi::control::{
 use diavasi::store::StoreKey;
 
 #[derive(Parser, Debug)]
-#[command(name = "diavasi", version, about = "Diavasi administration CLI")]
+#[command(name = "diavasi", version, about = "Diavasi consumer-group server")]
 struct Cli {
-    /// Control plane base URL (client commands).
+    /// Control plane base URL for the admin commands.
     #[arg(
         long,
         global = true,
@@ -20,7 +20,7 @@ struct Cli {
     )]
     url: String,
 
-    /// Bearer token (client commands).
+    /// Bearer token. `serve` requires it, and so do the admin commands.
     #[arg(long, global = true, env = "DIAVASI_API_TOKEN", hide_env_values = true)]
     token: Option<String>,
 
@@ -55,8 +55,6 @@ enum Commands {
         bind: SocketAddr,
         #[arg(long)]
         store: PathBuf,
-        #[arg(long, env = "DIAVASI_API_TOKEN", hide_env_values = true)]
-        token: String,
         /// Optional 64-char hex store master key (else DIAVASI_STORE_KEY / ephemeral).
         #[arg(long)]
         store_key: Option<String>,
@@ -86,7 +84,7 @@ enum Commands {
         #[arg(long, default_value_t = 0, env = "DIAVASI_CHECKPOINT_INTERVAL_MS")]
         checkpoint_interval_ms: u64,
     },
-    /// Print library version.
+    /// Print the library version.
     Version,
     /// Seed Postgres, MongoDB, Redis, or ScyllaDB, then consume the rows and print throughput.
     ///
@@ -117,14 +115,6 @@ enum Commands {
         #[arg(long)]
         keep: bool,
     },
-    /// Commands that call a running server's control plane.
-    #[command(flatten)]
-    Remote(RemoteCmd),
-}
-
-/// Commands sent to the control plane at `--url` with `--token`.
-#[derive(Subcommand, Debug)]
-enum RemoteCmd {
     /// Server status.
     Status,
     /// Live dashboard of the control plane.
@@ -301,6 +291,13 @@ mod adapter_test;
 mod sources;
 mod tui;
 
+fn require_token(token: Option<String>) -> Result<String, ExitCode> {
+    token.ok_or_else(|| {
+        eprintln!("error: --token or {API_TOKEN_ENV} required");
+        ExitCode::from(2)
+    })
+}
+
 async fn run(cli: Cli) -> Result<(), ExitCode> {
     match cli.command {
         Commands::Version => {
@@ -310,7 +307,6 @@ async fn run(cli: Cli) -> Result<(), ExitCode> {
         Commands::Serve {
             bind,
             store,
-            token,
             store_key,
             data_bind,
             tls_cert,
@@ -320,6 +316,7 @@ async fn run(cli: Cli) -> Result<(), ExitCode> {
             http_tls_key,
             checkpoint_interval_ms,
         } => {
+            let token = require_token(cli.token)?;
             diavasi::observe::init_serve_tracing();
             let store_key = match store_key {
                 Some(hex) => Some(StoreKey::from_hex(&hex).map_err(|e| {
@@ -373,8 +370,6 @@ async fn run(cli: Cli) -> Result<(), ExitCode> {
                 redis_url,
                 scylla_url,
                 keep,
-                // One name per run, so an object of the same name that
-                // someone else created is never dropped.
                 object: format!("diavasi_test_{}", std::process::id()),
                 json: matches!(cli.output, OutputFormat::Json),
             })
@@ -385,18 +380,15 @@ async fn run(cli: Cli) -> Result<(), ExitCode> {
             }
             Ok(())
         }
-        Commands::Remote(cmd) => {
-            let token = cli.token.ok_or_else(|| {
-                eprintln!("error: --token or {API_TOKEN_ENV} required");
-                ExitCode::from(2)
-            })?;
+        command => {
+            let token = require_token(cli.token)?;
             let client = Client {
                 base: cli.url.trim_end_matches('/').to_string(),
                 token,
                 output: cli.output,
                 http: reqwest::Client::new(),
             };
-            client.dispatch(cmd).await
+            client.dispatch(command).await
         }
     }
 }
@@ -409,10 +401,11 @@ struct Client {
 }
 
 impl Client {
-    async fn dispatch(&self, cmd: RemoteCmd) -> Result<(), ExitCode> {
+    async fn dispatch(&self, cmd: Commands) -> Result<(), ExitCode> {
         match cmd {
-            RemoteCmd::Tui => tui::run(&self.base, &self.token).await,
-            RemoteCmd::Status => {
+            Commands::Serve { .. } | Commands::Version | Commands::Test { .. } => unreachable!(),
+            Commands::Tui => tui::run(&self.base, &self.token).await,
+            Commands::Status => {
                 let v = self.get_json("/v1/status").await?;
                 self.print_value(&v, |v| {
                     println!(
@@ -425,7 +418,7 @@ impl Client {
                 });
                 Ok(())
             }
-            RemoteCmd::Connection(ConnectionCmd::Add {
+            Commands::Connection(ConnectionCmd::Add {
                 id,
                 kind,
                 config_json,
@@ -451,7 +444,7 @@ impl Client {
                 });
                 Ok(())
             }
-            RemoteCmd::Connection(ConnectionCmd::List) => {
+            Commands::Connection(ConnectionCmd::List) => {
                 let v = self.get_json("/v1/connections").await?;
                 self.print_value(&v, |v| {
                     if let Some(arr) = v.as_array() {
@@ -467,7 +460,7 @@ impl Client {
                 });
                 Ok(())
             }
-            RemoteCmd::Connection(ConnectionCmd::Show { id }) => {
+            Commands::Connection(ConnectionCmd::Show { id }) => {
                 let v = self.get_json(&format!("/v1/connections/{id}")).await?;
                 self.print_value(&v, |v| {
                     println!(
@@ -479,7 +472,7 @@ impl Client {
                 });
                 Ok(())
             }
-            RemoteCmd::Connection(ConnectionCmd::Delete { id }) => {
+            Commands::Connection(ConnectionCmd::Delete { id }) => {
                 self.delete(&format!("/v1/connections/{id}")).await?;
                 if matches!(self.output, OutputFormat::Json) {
                     println!("{{\"ok\":true}}");
@@ -488,7 +481,7 @@ impl Client {
                 }
                 Ok(())
             }
-            RemoteCmd::Group(GroupCmd::Create {
+            Commands::Group(GroupCmd::Create {
                 group_id,
                 total_records,
                 payload_size,
@@ -534,7 +527,7 @@ impl Client {
                 });
                 Ok(())
             }
-            RemoteCmd::Group(GroupCmd::List) => {
+            Commands::Group(GroupCmd::List) => {
                 let v = self.get_json("/v1/groups").await?;
                 self.print_value(&v, |v| {
                     if let Some(arr) = v.as_array() {
@@ -550,7 +543,7 @@ impl Client {
                 });
                 Ok(())
             }
-            RemoteCmd::Group(GroupCmd::Show { id }) => {
+            Commands::Group(GroupCmd::Show { id }) => {
                 let v = self.get_json(&format!("/v1/groups/{id}")).await?;
                 self.print_value(&v, |v| {
                     println!(
@@ -563,7 +556,7 @@ impl Client {
                 });
                 Ok(())
             }
-            RemoteCmd::Group(GroupCmd::Delete { id }) => {
+            Commands::Group(GroupCmd::Delete { id }) => {
                 self.delete(&format!("/v1/groups/{id}")).await?;
                 if matches!(self.output, OutputFormat::Json) {
                     println!("{{\"ok\":true}}");
@@ -572,11 +565,11 @@ impl Client {
                 }
                 Ok(())
             }
-            RemoteCmd::Group(GroupCmd::Start { id }) => self.group_action(&id, "start").await,
-            RemoteCmd::Group(GroupCmd::Pause { id }) => self.group_action(&id, "pause").await,
-            RemoteCmd::Group(GroupCmd::Resume { id }) => self.group_action(&id, "resume").await,
-            RemoteCmd::Group(GroupCmd::Drain { id }) => self.group_action(&id, "drain").await,
-            RemoteCmd::Group(GroupCmd::Diagnostics { id }) => {
+            Commands::Group(GroupCmd::Start { id }) => self.group_action(&id, "start").await,
+            Commands::Group(GroupCmd::Pause { id }) => self.group_action(&id, "pause").await,
+            Commands::Group(GroupCmd::Resume { id }) => self.group_action(&id, "resume").await,
+            Commands::Group(GroupCmd::Drain { id }) => self.group_action(&id, "drain").await,
+            Commands::Group(GroupCmd::Diagnostics { id }) => {
                 let v = self
                     .get_json(&format!("/v1/groups/{id}/diagnostics"))
                     .await?;
@@ -599,7 +592,7 @@ impl Client {
                 });
                 Ok(())
             }
-            RemoteCmd::Consumer(ConsumerCmd::List { group }) => {
+            Commands::Consumer(ConsumerCmd::List { group }) => {
                 let v = self
                     .get_json(&format!("/v1/groups/{group}/consumers"))
                     .await?;
@@ -612,7 +605,7 @@ impl Client {
                 });
                 Ok(())
             }
-            RemoteCmd::Checkpoint(CheckpointCmd::Show { group }) => {
+            Commands::Checkpoint(CheckpointCmd::Show { group }) => {
                 let v = self
                     .get_json(&format!("/v1/groups/{group}/checkpoint"))
                     .await?;
@@ -626,7 +619,7 @@ impl Client {
                 });
                 Ok(())
             }
-            RemoteCmd::Store(StoreCmd::Backup { path }) => {
+            Commands::Store(StoreCmd::Backup { path }) => {
                 let v = self
                     .post_json("/v1/store/backup", &BackupRequest { path })
                     .await?;

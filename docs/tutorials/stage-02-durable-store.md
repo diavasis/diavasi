@@ -2,7 +2,7 @@
 
 This tutorial teaches Stage 2 Diavasi durability: what is persisted, why the fetched/committed boundary matters under crashes, and how recovery tests prove no silent loss.
 
-Related code: `crates/diavasi/src/store/`. Decision record: [ADR 0003](../adr/0003-redb-metadata-store.md). Stage 1 domain: [stage-01 tutorial](stage-01-core-domain.md).
+Related code: `crates/diavasi-core/src/store/`. Decision record: [ADR 0003](../adr/0003-redb-metadata-store.md). Stage 1 domain: [stage-01 tutorial](stage-01-core-domain.md).
 
 ## 1. What Stage 2 is
 
@@ -117,7 +117,7 @@ let sealed = seal_secret(&key, password_bytes)?;
 From the repo root:
 
 ```bash
-cargo test -p diavasi --lib store::
+cargo test -p diavasi-core --lib store::
 ```
 
 Important cases:

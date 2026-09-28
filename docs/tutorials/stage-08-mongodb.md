@@ -31,7 +31,7 @@ Compose publishes MongoDB on `127.0.0.1:27017` with no authentication.
 ## 3. Start the server
 
 ```bash
-cargo build -p diavasi-cli
+cargo build -p diavasi
 export PATH="$PWD/target/debug:$PATH"
 mkdir -p /tmp/diavasi-s8
 export DIAVASI_API_TOKEN=dev-token

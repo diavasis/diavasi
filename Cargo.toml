@@ -1,15 +1,15 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/diavasi-core",
     "crates/diavasi",
-    "crates/diavasi-cli",
     "crates/diavasi-adapter-postgres",
     "crates/diavasi-adapter-mongodb",
     "crates/diavasi-adapter-redis",
     "crates/diavasi-adapter-scylla",
     "crates/diavasi-bench",
 ]
-default-members = ["crates/diavasi", "crates/diavasi-cli"]
+default-members = ["crates/diavasi-core", "crates/diavasi"]
 
 [workspace.package]
 version = "0.12.0"
@@ -19,7 +19,7 @@ repository = "https://github.com/diavasis/diavasi"
 rust-version = "1.85"
 
 [workspace.dependencies]
-diavasi = { version = "0.12.0", path = "crates/diavasi", default-features = false }
+diavasi = { package = "diavasi-core", version = "0.12.0", path = "crates/diavasi-core", default-features = false }
 anyhow = "1"
 bytes = "1"
 clap = { version = "4", features = ["derive"] }

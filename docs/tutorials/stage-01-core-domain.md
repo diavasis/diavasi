@@ -2,7 +2,7 @@
 
 This tutorial teaches the Stage 1 Diavasi consumer-group domain: what it is, why it is shaped this way, and how the in-memory implementation works. It assumes Rust fluency, not prior Diavasi knowledge.
 
-Related code lives under `crates/diavasi/src/core/`. Related decision record: [ADR 0002](../adr/0002-ack-checkpoint-model.md).
+Related code lives under `crates/diavasi-core/src/core/`. Related decision record: [ADR 0002](../adr/0002-ack-checkpoint-model.md).
 
 ## 1. What Stage 1 is
 
@@ -190,7 +190,7 @@ Assign a batch to C1, then `leave_consumer(C1)`. The batch returns to the buffer
 Run:
 
 ```bash
-cargo test -p diavasi --lib core:: --all-features
+cargo test -p diavasi-core --lib core:: --all-features
 ```
 
 A bug would be: advancing `committed` while an earlier ordering remains unacked; losing a source key across `recover_from`; or growing the buffer past configured caps.

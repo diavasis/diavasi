@@ -1,8 +1,8 @@
 # Tutorial: Stage 4 control plane and CLI
 
-This tutorial teaches Stage 4 Diavasi: the axum `/v1` control plane, bearer auth, secret-safe connections, and driving a synthetic group lifecycle only via the `diavasi` CLI against a local `serve`.
+This tutorial teaches Stage 4 Diavasi: the axum `/v1` control plane, bearer auth, secret-safe connections, and driving a synthetic group lifecycle with the `diavasi` executable against a local `diavasi serve`.
 
-Related code: `crates/diavasi/src/control/`, `crates/diavasi-cli/`. Decision record: [ADR 0005](../adr/0005-control-plane.md). Prior: [Stage 3](stage-03-group-runtime.md).
+Related code: `crates/diavasi-core/src/control/`, `crates/diavasi/`. Decision record: [ADR 0005](../adr/0005-control-plane.md). Prior: [Stage 3](stage-03-group-runtime.md).
 
 ## 1. What Stage 4 is
 
@@ -10,7 +10,7 @@ Stage 4 adds:
 
 - HTTP API under `/v1` (axum) with bearer auth
 - `ControlService` over `GroupSupervisor` + `RedbStore`
-- `diavasi` CLI: `serve`, `connection`, `group`, `consumer`, `checkpoint`, `status`
+- `diavasi serve`, plus `connection`, `group`, `consumer`, `checkpoint`, and `status` on the same executable
 
 Still absent: production data plane (Stage 5), real DB adapters, RBAC.
 
@@ -50,7 +50,7 @@ diavasi CLI  --HTTP-->  axum /v1  -->  BearerAuth  -->  ControlService
 Build the CLI:
 
 ```bash
-cargo build -p diavasi-cli
+cargo build -p diavasi
 export PATH="$PWD/target/debug:$PATH"
 ```
 

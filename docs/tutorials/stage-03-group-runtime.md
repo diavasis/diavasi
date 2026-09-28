@@ -2,7 +2,7 @@
 
 This tutorial teaches Stage 3 Diavasi supervision: why each consumer group gets its own Tokio task tree, how the single-owner mailbox works, and how recovery from the durable store is proven.
 
-Related code: `crates/diavasi/src/runtime/`. Decision record: [ADR 0004](../adr/0004-group-supervision.md). Prior stages: [Stage 1](stage-01-core-domain.md), [Stage 2](stage-02-durable-store.md).
+Related code: `crates/diavasi-core/src/runtime/`. Decision record: [ADR 0004](../adr/0004-group-supervision.md). Prior stages: [Stage 1](stage-01-core-domain.md), [Stage 2](stage-02-durable-store.md).
 
 ## 1. What Stage 3 is
 
@@ -88,7 +88,7 @@ let handle = sup.get_handle(&group_id).unwrap();
 ## 5. How to run Stage 3 tests
 
 ```bash
-cargo test -p diavasi --lib runtime::
+cargo test -p diavasi-core --lib runtime::
 ```
 
 | Test | What it proves |

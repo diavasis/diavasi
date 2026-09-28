@@ -41,7 +41,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 echo "==> docs"
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features --workspace \
-  --exclude diavasi-cli --exclude diavasi-bench
+  --exclude diavasi --exclude diavasi-bench
 
 echo "==> test"
 cargo test --all --all-features

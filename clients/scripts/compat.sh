@@ -62,7 +62,7 @@ require() {
   return 1
 }
 
-cargo build -p diavasi-cli
+cargo build -p diavasi
 "$root/target/debug/diavasi" serve \
   --bind "127.0.0.1:${http_port}" \
   --data-bind "127.0.0.1:${data_port}" \

@@ -26,10 +26,26 @@ jobs:
           if tag != f"v{version}":
               raise SystemExit(f"tag {tag} does not match workspace version {version}")
           deps = data["workspace"]["dependencies"]
-          for name in ("diavasi", "diavasi-adapter-postgres", "diavasi-adapter-mongodb", "diavasi-adapter-redis", "diavasi-adapter-scylla"):
-              got = deps[name]["version"]
-              if got != version:
-                  raise SystemExit(f"{name} dependency version {got} != {version}")
+          expected = {
+              "diavasi-core",
+              "diavasi-adapter-postgres",
+              "diavasi-adapter-mongodb",
+              "diavasi-adapter-redis",
+              "diavasi-adapter-scylla",
+          }
+          found = set()
+          for key, spec in deps.items():
+              if not isinstance(spec, dict) or "version" not in spec:
+                  continue
+              pkg = spec.get("package", key)
+              if pkg not in expected:
+                  continue
+              found.add(pkg)
+              if spec["version"] != version:
+                  raise SystemExit(f"{pkg} dependency version {spec['version']} != {version}")
+          missing = expected - found
+          if missing:
+              raise SystemExit(f"workspace.dependencies missing {sorted(missing)}")
           PY
       - name: Publish
         env:
@@ -56,9 +72,9 @@ jobs:
             done
             return 1
           }
-          publish diavasi
+          publish diavasi-core
           publish diavasi-adapter-postgres
           publish diavasi-adapter-mongodb
           publish diavasi-adapter-redis
           publish diavasi-adapter-scylla
-          publish diavasi-cli
+          publish diavasi

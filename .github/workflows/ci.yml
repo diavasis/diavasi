@@ -28,28 +28,28 @@ jobs:
       - name: test
         run: cargo test --all --all-features
       - name: docs
-        run: cargo doc --no-deps --all-features --workspace --exclude diavasi-cli --exclude diavasi-bench
+        run: cargo doc --no-deps --all-features --workspace --exclude diavasi --exclude diavasi-bench
         env:
           RUSTDOCFLAGS: -D warnings
       - name: package
         run: cargo publish --workspace --dry-run --locked
       - name: transport smoke tcp
         run: >
-          cargo run -p diavasi --bin diavasi-transport-bench --features transport-bench --
+          cargo run -p diavasi-core --bin diavasi-transport-bench --features transport-bench --
           --transport tcp --smoke --output docs/bench/results.jsonl
       - name: transport smoke grpc
         run: >
-          cargo run -p diavasi --bin diavasi-transport-bench --features transport-bench --
+          cargo run -p diavasi-core --bin diavasi-transport-bench --features transport-bench --
           --transport grpc --smoke --listen 127.0.0.1:9801 --connect 127.0.0.1:9801
           --output docs/bench/results.jsonl
       - name: transport smoke quic
         run: >
-          cargo run -p diavasi --bin diavasi-transport-bench --features transport-bench --
+          cargo run -p diavasi-core --bin diavasi-transport-bench --features transport-bench --
           --transport quic --smoke --listen 127.0.0.1:9802 --connect 127.0.0.1:9802
           --output docs/bench/results.jsonl
       - name: transport smoke webtransport
         run: >
-          cargo run -p diavasi --bin diavasi-transport-bench --features transport-bench --
+          cargo run -p diavasi-core --bin diavasi-transport-bench --features transport-bench --
           --transport webtransport --smoke --listen 127.0.0.1:9803 --connect 127.0.0.1:9803
           --output docs/bench/results.jsonl
 

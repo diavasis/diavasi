@@ -22,6 +22,7 @@ impl Drop for Server {
     }
 }
 
+/// The `diavasi` executable under test.
 pub fn bin() -> String {
     env!("CARGO_BIN_EXE_diavasi").to_string()
 }
