@@ -3,7 +3,7 @@
 #
 #   docker run --rm -p 7700:7700 -p 7710:7710 \
 #     -e DIAVASI_API_TOKEN=secret \
-#     ghcr.io/diavasis/diavasi:0.12.0
+#     ghcr.io/diavasis/diavasi:0.13.0
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
 COPY diavasi /usr/local/bin/diavasi

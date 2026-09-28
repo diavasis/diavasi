@@ -52,14 +52,55 @@ The same command works with `--profile elixir`, `rust`, `go`, `js`, `java`, `csh
 
 ### Installation
 
-Build the executable from this repo. The toolchain is the stable channel in `rust-toolchain.toml`. `diavasi serve` and `diavasi test` run the server. `diavasi group`, `diavasi status`, and `diavasi tui` talk HTTP to a server that is already running.
+Release `v0.13.0` installs one `diavasi` binary. `diavasi serve` and `diavasi test` run the server. `diavasi group`, `diavasi status`, `diavasi tui`, and the other HTTP commands talk to a server that is already running.
+
+Homebrew, from [diavasis/homebrew-tap](https://github.com/diavasis/homebrew-tap). The formula checksum is the release `SHA256SUMS` entry, filled in when the tag is published.
+
+```bash
+brew install diavasis/tap/diavasi
+```
+
+mise. [packaging/mise/README.md](packaging/mise/README.md) shows a short name in `.tool-versions`.
+
+```bash
+mise use -g github:diavasis/diavasi@0.13.0
+```
+
+asdf, from [diavasis/asdf-diavasi](https://github.com/diavasis/asdf-diavasi).
+
+```bash
+asdf plugin add diavasi https://github.com/diavasis/asdf-diavasi.git
+asdf install diavasi 0.13.0
+```
+
+The install script takes the latest tag, or `DIAVASI_VERSION=v0.13.0` for this release. It puts the binary in `~/.local/bin`.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/diavasis/diavasi/main/scripts/install.sh | sh
+```
+
+The published image is the same linux binary. It listens on 7700 and 7710 and expects `DIAVASI_API_TOKEN`.
+
+```bash
+docker run --rm -p 7700:7700 -p 7710:7710 \
+  -e DIAVASI_API_TOKEN=secret \
+  ghcr.io/diavasis/diavasi:0.13.0
+```
+
+From crates.io, after this version is published:
+
+```bash
+cargo install diavasi
+```
+
+From this repo, the toolchain is the stable channel in `rust-toolchain.toml`.
 
 ```bash
 cargo build -p diavasi
 export PATH="$PWD/target/debug:$PATH"
 ```
 
-The Compose file in Get started is the container path. Database images, for when a group reads a real source, are in [docker-compose.yml](docker-compose.yml):
+The Compose file in Get started is the SDK demo. Database images, for when a group reads a real source, are in [docker-compose.yml](docker-compose.yml):
 
 
 | Service  | Image                    | Host port |
@@ -209,9 +250,10 @@ Language, install, and the Compose profile for each SDK are in [clients/README.m
 | v0.10.0       | ScyllaDB adapter. One partition in clustering order, or an explicit token scan. Resume is the logical key       | Done    |
 | v0.11.0       | Thin SDKs (Elixir, Rust, Python, Go, JavaScript, Java, C#, C)                                                   | Done    |
 | v0.12.0       | Metrics, soak, operator diagnostics, and a ratatui client of the HTTP API (`diavasi tui`)                       | Done    |
-| v0.13.0       | S3 adapter. Object key is the order; resume is `ListObjects` `StartAfter`                                       | Planned |
-| v0.14.0       | Reconciliation research (ADR only)                                                                              | Planned |
-| v0.15.0       | Tauri 2 app on the same HTTP API                                                                                | Planned |
+| v0.13.0       | One `diavasi` executable for the server and the admin commands. Library crate `diavasi-core`. Install from GitHub Releases, Homebrew, mise, asdf, and `ghcr.io/diavasis/diavasi` | Done    |
+| v0.14.0       | S3 adapter. Object key is the order; resume is `ListObjects` `StartAfter`                                       | Planned |
+| v0.15.0       | Reconciliation research (ADR only)                                                                              | Planned |
+| v0.16.0       | Tauri 2 app on the same HTTP API                                                                                | Planned |
 
 
 Stage tutorials and reviews live under [docs/](docs/).

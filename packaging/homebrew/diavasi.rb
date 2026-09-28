@@ -4,7 +4,7 @@
 class Diavasi < Formula
   desc "Durable consumer groups over existing databases"
   homepage "https://github.com/diavasis/diavasi"
-  version "0.12.0"
+  version "0.13.0"
   license "Apache-2.0"
 
   on_macos do

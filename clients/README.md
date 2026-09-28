@@ -37,7 +37,7 @@ The published server image is separate from that Compose file and from the datab
 ```bash
 docker run --rm -p 7700:7700 -p 7710:7710 \
   -e DIAVASI_API_TOKEN=secret \
-  ghcr.io/diavasis/diavasi:0.12.0
+  ghcr.io/diavasis/diavasi:0.13.0
 ```
 
 ## Notebooks

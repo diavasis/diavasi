@@ -37,7 +37,7 @@ curl -s -H "$AUTH" $DIAVASI_URL/v1/status
 ```
 
 ```json
-{"version": "0.12.0", "schema_version": 1, "running_groups": ["orders"], "bind": "127.0.0.1:7700"}
+{"version": "0.13.0", "schema_version": 1, "running_groups": ["orders"], "bind": "127.0.0.1:7700"}
 ```
 
 ## Connections

@@ -2,7 +2,7 @@
 # Install diavasi from GitHub Releases (no Rust toolchain required).
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/diavasis/diavasi/main/scripts/install.sh | sh
-#   DIAVASI_VERSION=v0.12.0 sh scripts/install.sh
+#   DIAVASI_VERSION=v0.13.0 sh scripts/install.sh
 set -euo pipefail
 
 REPO="${DIAVASI_REPO:-diavasis/diavasi}"
