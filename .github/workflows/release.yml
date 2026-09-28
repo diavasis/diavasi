@@ -78,3 +78,88 @@ jobs:
           publish diavasi-adapter-redis
           publish diavasi-adapter-scylla
           publish diavasi
+
+  # GitHub Release assets for the diavasi executable. Independent of the
+  # crates.io job above. Asset names stay prefixed `diavasi-` so mise can match them.
+  package-binary:
+    name: Package ${{ matrix.asset }}
+    runs-on: ${{ matrix.runner }}
+    environment: release
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset: linux-x86_64
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            asset: linux-aarch64
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+            asset: macos-aarch64
+          - runner: macos-latest
+            target: x86_64-apple-darwin
+            asset: macos-x86_64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.asset }}
+      - name: Check the tag matches the workspace version
+        run: |
+          python3 - <<'PY'
+          import os, tomllib
+          with open("Cargo.toml", "rb") as handle:
+              data = tomllib.load(handle)
+          version = data["workspace"]["package"]["version"]
+          tag = os.environ["GITHUB_REF_NAME"]
+          if tag != f"v{version}":
+              raise SystemExit(f"tag {tag} does not match workspace version {version}")
+          PY
+      - name: Build
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.asset }}" = "macos-x86_64" ]; then
+            export CMAKE_OSX_ARCHITECTURES=x86_64
+          fi
+          cargo build --release --locked -p diavasi --target "${{ matrix.target }}"
+      - name: Archive
+        run: |
+          set -euo pipefail
+          stage="$(mktemp -d)"
+          install -m 755 "target/${{ matrix.target }}/release/diavasi" "${stage}/diavasi"
+          tar -C "${stage}" -czf "diavasi-${{ matrix.asset }}.tar.gz" diavasi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: diavasi-${{ matrix.asset }}
+          path: diavasi-${{ matrix.asset }}.tar.gz
+
+  release-assets:
+    name: GitHub Release assets
+    needs: package-binary
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: diavasi-*
+          merge-multiple: true
+      - name: SHA256SUMS
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum diavasi-*.tar.gz | sort -k2 > SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
