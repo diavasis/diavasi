@@ -2,7 +2,7 @@
 
 [![ci](https://github.com/diavasis/diavasi/actions/workflows/ci.yml/badge.svg)](https://github.com/diavasis/diavasi/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/diavasi.svg)](https://crates.io/crates/diavasi)
-[![docs.rs](https://docs.rs/diavasi/badge.svg)](https://docs.rs/diavasi)
+[![docs.rs](https://docs.rs/diavasi-core/badge.svg)](https://docs.rs/diavasi-core)
 [![rust](https://img.shields.io/badge/rust-1.85%2B-000000?logo=rust)](https://www.rust-lang.org)
 [![license](https://img.shields.io/github/license/diavasis/diavasi)](https://github.com/diavasis/diavasi/blob/main/LICENSE)
 
@@ -19,7 +19,7 @@ connection + query + ordering contract + consumer group
   -> durable, resumable, parallel-consumable stream
 ```
 
-The control plane is HTTP and the `diavasi` CLI. The data plane is a TLS gRPC stream, `DataPlane.Consume`. The server owns the cursor. A client acks by `batch_id` and stores nothing.
+The control plane is HTTP. The `diavasi` executable hosts it (`diavasi serve`) and talks to it (`diavasi group`, `diavasi status`, `diavasi tui`). The data plane is a TLS gRPC stream, `DataPlane.Consume`. The server owns the cursor. A client acks by `batch_id` and stores nothing.
 
 ### Why
 
@@ -52,10 +52,10 @@ The same command works with `--profile elixir`, `rust`, `go`, `js`, `java`, `csh
 
 ### Installation
 
-Build the CLI from this repo. The toolchain is the stable channel in `rust-toolchain.toml`.
+Build the executable from this repo. The toolchain is the stable channel in `rust-toolchain.toml`. `diavasi serve` and `diavasi test` run the server. `diavasi group`, `diavasi status`, and `diavasi tui` talk HTTP to a server that is already running.
 
 ```bash
-cargo build -p diavasi-cli
+cargo build -p diavasi
 export PATH="$PWD/target/debug:$PATH"
 ```
 
@@ -242,8 +242,8 @@ docker compose -f clients/docker-compose.yml --profile c up --abort-on-container
 
 | Crate                      | Role                                                             |
 | -------------------------- | ---------------------------------------------------------------- |
-| `diavasi`                  | Server library (core, store, runtime, control plane, data plane) |
-| `diavasi-cli`              | Admin CLI and the ratatui dashboard (`diavasi`, `diavasi tui`)   |
+| `diavasi-core`             | Library (core, store, runtime, control plane, data plane)        |
+| `diavasi`                  | Executable: `serve`, `test`, and the admin commands, including `tui` |
 | `diavasi-adapter-postgres` | PostgreSQL keyset source                                         |
 | `diavasi-adapter-mongodb`  | MongoDB find keyset source                                       |
 | `diavasi-adapter-redis`    | Redis Streams source                                             |

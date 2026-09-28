@@ -1,0 +1,69 @@
+[package]
+name = "diavasi-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Durable consumer groups over existing database queries"
+readme = "../../README.md"
+
+[lib]
+name = "diavasi"
+path = "src/lib.rs"
+
+[features]
+# The transport bake-off harness (Stage 0). Off by default so dependents do not
+# build QUIC and WebTransport.
+default = []
+transport-bench = ["dep:quinn", "dep:hdrhistogram", "dep:sysinfo", "dep:wtransport"]
+
+[dependencies]
+anyhow.workspace = true
+bytes.workspace = true
+clap.workspace = true
+futures.workspace = true
+prost.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_path_to_error.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+prometheus.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
+tonic = { workspace = true, features = ["tls"] }
+tokio-stream = "0.1"
+quinn = { workspace = true, optional = true }
+rcgen.workspace = true
+hdrhistogram = { workspace = true, optional = true }
+sysinfo = { workspace = true, optional = true }
+wtransport = { workspace = true, optional = true, features = ["self-signed", "dangerous-configuration"] }
+redb.workspace = true
+chacha20poly1305.workspace = true
+hex.workspace = true
+rand.workspace = true
+zeroize.workspace = true
+axum.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+http-body-util.workspace = true
+
+[build-dependencies]
+tonic-build.workspace = true
+protoc-bin-vendored = "3"
+
+[[bin]]
+name = "diavasi-transport-bench"
+path = "src/bin/transport_bench.rs"
+required-features = ["transport-bench"]
+
+[dev-dependencies]
+tempfile = "3"
+proptest = { workspace = true }
+tower = { workspace = true, features = ["util"] }
+http-body-util.workspace = true
+reqwest = { workspace = true }

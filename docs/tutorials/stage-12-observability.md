@@ -2,14 +2,14 @@
 
 This tutorial scrapes metrics, checks readiness, and reads group diagnostics for a synthetic group. The server is the same `diavasi serve` as the earlier stages.
 
-Related code: `crates/diavasi/src/observe.rs`, `crates/diavasi/src/control/`, `crates/diavasi/src/runtime/`. Decision record: [ADR 0013](../adr/0013-observability.md). Reference: [observability](../observability.md).
+Related code: `crates/diavasi-core/src/observe.rs`, `crates/diavasi-core/src/control/`, `crates/diavasi-core/src/runtime/`. Decision record: [ADR 0013](../adr/0013-observability.md). Reference: [observability](../observability.md).
 
 ## 1. Start the server
 
 From the repo root:
 
 ```bash
-cargo build -p diavasi-cli
+cargo build -p diavasi
 export PATH="$PWD/target/debug:$PATH"
 mkdir -p /tmp/diavasi-sdk
 export DIAVASI_API_TOKEN=sdk-demo

@@ -47,4 +47,4 @@ Stage 8 is done. Do not start Stage 9 without an explicit instruction.
 
 ## crates.io
 
-`.github/workflows/release.yml` publishes on a tag `vX.Y.Z` that matches `workspace.package.version`. Authentication is the `CARGO_REGISTRY_TOKEN` secret, available to the `release` environment. The job publishes `diavasi`, the four adapters, and `diavasi-cli`.
+`.github/workflows/release.yml` publishes on a tag `vX.Y.Z` that matches `workspace.package.version`. Authentication is the `CARGO_REGISTRY_TOKEN` secret, available to the `release` environment. The job publishes `diavasi-core`, the four adapters, and `diavasi`.

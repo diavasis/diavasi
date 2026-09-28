@@ -27,7 +27,7 @@ INSERT INTO events (id, body) VALUES (1, 'a'), (2, 'b'), (3, 'c');
 ## 3. Start the server
 
 ```bash
-cargo build -p diavasi-cli
+cargo build -p diavasi
 export PATH="$PWD/target/debug:$PATH"
 mkdir -p /tmp/diavasi-s6
 export DIAVASI_API_TOKEN=dev-token

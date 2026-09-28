@@ -29,7 +29,7 @@ The index, including Compose profiles and the notebook image, is [clients/README
 ## A server you start yourself
 
 ```bash
-cargo build -p diavasi-cli
+cargo build -p diavasi
 export PATH="$PWD/target/debug:$PATH"
 diavasi serve --bind 127.0.0.1:7700 --data-bind 127.0.0.1:7710 \
   --store /tmp/diavasi-sdk/state --token sdk-demo

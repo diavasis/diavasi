@@ -45,7 +45,7 @@ One Diavasi server hosts many independent consumer-group runtimes under a superv
 
 ## Control plane (Stage 4)
 
-Operators talk to a versioned HTTP API (`/v1`) served by axum inside the Diavasi process. The `diavasi` CLI is an HTTP client (plus `diavasi serve` which hosts the control plane). `diavasi tui` is the same client as a live dashboard. Auth is a shared bearer token; connection secrets are sealed at rest and never returned after create. Lifecycle verbs map onto `GroupSupervisor` (`pause` = graceful stop). See [ADR 0005](adr/0005-control-plane.md).
+Operators talk to a versioned HTTP API (`/v1`) served by axum inside the Diavasi process. The `diavasi` executable hosts that process (`serve`), wires the adapters, and is also the HTTP client (`group`, `status`, `tui`). Auth is a shared bearer token; connection secrets are sealed at rest and never returned after create. Lifecycle verbs map onto `GroupSupervisor` (`pause` = graceful stop). See [ADR 0005](adr/0005-control-plane.md).
 
 ## Data plane (Stage 5)
 
@@ -85,7 +85,7 @@ An idle running group is one owner task, a fetch ticker, a timeout ticker, and, 
 
 - [docs/api.md](api.md): the HTTP API.
 - [docs/operations.md](operations.md): lifecycle, stop reasons, restarts, limits, security, backup.
-- The crate docs (`cargo doc --open -p diavasi`): every public type, with examples.
+- The crate docs (`cargo doc --open -p diavasi-core`): every public type, with examples.
 
 ## Non-goals (initial releases)
 

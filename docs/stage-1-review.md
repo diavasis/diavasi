@@ -16,7 +16,7 @@
 ## Commands run
 
 ```text
-cargo test -p diavasi --lib core:: --all-features
+cargo test -p diavasi-core --lib core:: --all-features
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all --all-features

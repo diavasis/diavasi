@@ -2,7 +2,7 @@
 
 Thin clients of `diavasi.data.v1`. They connect with TLS, send a bearer token, join a group, yield batches, and ack by `batch_id`. The server owns the cursor. The contract is [ADR 0012](../docs/adr/0012-client-sdks.md).
 
-Each client is its own repository at version 0.1.0. That is the first publish of the libraries. `proto/data.proto` in those repositories is the copy of [crates/diavasi/proto/data.proto](../crates/diavasi/proto/data.proto) from server tag `v0.12.0`. Push those repositories before Compose or `clients/scripts/compat.sh` can clone them.
+Each client is its own repository at version 0.1.0. That is the first publish of the libraries. `proto/data.proto` in those repositories is the copy of [crates/diavasi-core/proto/data.proto](../crates/diavasi-core/proto/data.proto) from server tag `v0.12.0`. Push those repositories before Compose or `clients/scripts/compat.sh` can clone them.
 
 | Language | Repository | Install 0.1.0 | Compose profile |
 | --- | --- | --- | --- |
