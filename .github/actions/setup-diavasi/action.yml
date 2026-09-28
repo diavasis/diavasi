@@ -1,0 +1,22 @@
+name: Setup diavasi
+description: Install diavasi from GitHub Releases (no Rust toolchain)
+inputs:
+  version:
+    description: Release version without leading v (default latest)
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: Install diavasi
+      shell: bash
+      env:
+        DIAVASI_VERSION: ${{ inputs.version }}
+        DIAVASI_REPO: diavasis/diavasi
+        DIAVASI_INSTALL_DIR: ${{ runner.temp }}/bin
+      run: |
+        set -euo pipefail
+        mkdir -p "${DIAVASI_INSTALL_DIR}"
+        curl -fsSL "https://raw.githubusercontent.com/diavasis/diavasi/main/scripts/install.sh" | sh
+        echo "${DIAVASI_INSTALL_DIR}" >> "$GITHUB_PATH"
+        "diavasi" --version

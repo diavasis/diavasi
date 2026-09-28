@@ -1,0 +1,50 @@
+# Install-channel wrappers for the diavasi executable.
+# Secrets are never stored here. Do not generate ci or github_releases:
+# those workflows already publish the library, the adapters, and the binary.
+
+[project]
+name = "diavasi"
+description = "Durable consumer groups over existing databases"
+github_owner = "diavasis"
+github_repo = "diavasi"
+binary_name = "diavasi"
+version = "0.12.0"
+cargo_manifest = "crates/diavasi/Cargo.toml"
+license = "Apache-2.0"
+homepage = "https://github.com/diavasis/diavasi"
+
+[org]
+homebrew_tap = "diavasis/homebrew-tap"
+scoop_bucket = "diavasis/scoop-bucket"
+asdf_plugin_repo = "diavasis/asdf-diavasi"
+
+[mechanisms]
+ci = false
+github_releases = false
+install_sh = true
+homebrew = true
+scoop = true
+asdf = true
+mise = true
+setup_action = true
+npm = false
+pypi = false
+hex = false
+ruby_gem = false
+haskell_cabal = false
+
+[release]
+platforms = [
+  "linux-x86_64",
+  "linux-aarch64",
+  "macos-aarch64",
+  "macos-x86_64",
+]
+publish_crates_io = false
+publish_sha256sums = true
+
+[paths]
+packaging_dir = "packaging"
+scripts_dir = "scripts"
+workflows_dir = ".github/workflows"
+actions_dir = ".github/actions"
