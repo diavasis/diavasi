@@ -164,3 +164,40 @@ jobs:
           files: |
             dist/*.tar.gz
             dist/SHA256SUMS
+
+  docker-image:
+    name: Publish container image
+    needs: package-binary
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: diavasi-linux-x86_64
+          path: image
+      - name: Prepare build context
+        run: |
+          set -euo pipefail
+          tar -xzf image/diavasi-*.tar.gz -C image
+          cp clients/docker/entrypoint.sh image/entrypoint.sh
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          image="ghcr.io/diavasis/diavasi"
+          docker build \
+            -f clients/docker/Dockerfile.release \
+            -t "${image}:${version}" \
+            -t "${image}:latest" \
+            image
+          docker push "${image}:${version}"
+          docker push "${image}:latest"

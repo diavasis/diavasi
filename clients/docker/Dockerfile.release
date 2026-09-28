@@ -1,0 +1,13 @@
+# Published image. The release workflow copies in the linux-x86_64
+# GitHub Release binary. The root docker-compose.yml stays the database lab.
+#
+#   docker run --rm -p 7700:7700 -p 7710:7710 \
+#     -e DIAVASI_API_TOKEN=secret \
+#     ghcr.io/diavasis/diavasi:0.12.0
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
+COPY diavasi /usr/local/bin/diavasi
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh /usr/local/bin/diavasi
+EXPOSE 7700 7710
+ENTRYPOINT ["/entrypoint.sh"]
